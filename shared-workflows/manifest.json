@@ -1,0 +1,37 @@
+{
+  "name": "shared-workflows",
+  "version": "1.0.0",
+  "sourceRepo": "https://github.com/walshy66/tools",
+  "description": "Canonical shared workflows for Pi, Claude Code, and Codex.",
+  "portable": {
+    "skills": {
+      "tdd": "shared-workflows/portable/skills/tdd/SKILL.md",
+      "to-prd": "shared-workflows/portable/skills/to-prd/SKILL.md",
+      "to-issues": "shared-workflows/portable/skills/to-issues/SKILL.md",
+      "grill-me": "shared-workflows/portable/skills/grill-me/SKILL.md",
+      "git-guardrails-claude-code": "shared-workflows/portable/skills/git-guardrails-claude-code/SKILL.md",
+      "analyze": "shared-workflows/portable/skills/analyze/SKILL.md",
+      "clarify": "shared-workflows/portable/skills/clarify/SKILL.md",
+      "code-reviewer": "shared-workflows/portable/skills/code-reviewer/SKILL.md",
+      "design-reviewer": "shared-workflows/portable/skills/design-reviewer/SKILL.md",
+      "design": "shared-workflows/portable/skills/design/SKILL.md",
+      "handover": "shared-workflows/portable/skills/handover/SKILL.md",
+      "implement": "shared-workflows/portable/skills/implement/SKILL.md",
+      "plan": "shared-workflows/portable/skills/plan/SKILL.md",
+      "specify": "shared-workflows/portable/skills/specify/SKILL.md",
+      "tasks": "shared-workflows/portable/skills/tasks/SKILL.md"
+    },
+    "agents": {},
+    "templates": {
+      "prd-template": "shared-workflows/portable/templates/prd-template.md",
+      "issue-slice-template": "shared-workflows/portable/templates/issue-slice-template.md"
+    }
+  },
+  "pi": {
+    "extensions": "shared-workflows/pi/extensions/"
+  },
+  "notes": [
+    "Portable content should remain model-agnostic.",
+    "Tool-specific runtime behavior belongs in the tool-specific folders."
+  ]
+}
