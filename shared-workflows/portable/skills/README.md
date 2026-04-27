@@ -15,6 +15,7 @@ Canonical, model-agnostic skills shared across tools and projects.
 - `design-reviewer`
 - `design`
 - `handover`
+- `handover-idea`
 - `implement`
 - `plan`
 - `specify`
