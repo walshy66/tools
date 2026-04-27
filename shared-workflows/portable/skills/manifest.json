@@ -45,6 +45,10 @@
       "path": "shared-workflows/portable/skills/handover/SKILL.md"
     },
     {
+      "name": "handover-idea",
+      "path": "shared-workflows/portable/skills/handover-idea/SKILL.md"
+    },
+    {
       "name": "implement",
       "path": "shared-workflows/portable/skills/implement/SKILL.md"
     },

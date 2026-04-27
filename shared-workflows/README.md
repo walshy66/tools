@@ -19,6 +19,7 @@ Canonical shared content for tools and agents.
 - `design-reviewer`
 - `design`
 - `handover`
+- `handover-idea`
 - `implement`
 - `plan`
 - `specify`
@@ -28,3 +29,4 @@ Canonical shared content for tools and agents.
 
 - `portable/` — reusable, model-agnostic skills, agents, and templates
 - `pi/` — Pi-specific runtime extensions and adapters
+- `references/` — shared reference documents such as the constitution
