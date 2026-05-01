@@ -15,10 +15,10 @@ Legacy detailed development constitution retained below while routing is introdu
 Original sync header preserved for traceability.
 
 Sync Impact Report
-- Version change: 1.12.0 -> 1.12.1
-- Shared repo version: 1.0.5
+- Version change: 1.12.1 -> 1.13.0
+- Shared repo version: 1.0.6
 - Modified principles: none
-- Added principles: none
+- Added principles: X. Deep Modules (NON-NEGOTIABLE)
 - Added clarifications: none
 - Renumbered sections: none
 - Removed sections: none
@@ -26,7 +26,7 @@ Sync Impact Report
 - Follow-up TODOs: none
 -->
 
-# CoachCW Constitution (v1.12.1)
+# CoachCW Constitution (v1.13.0)
 
 **Shared repo location**: `shared-workflows/references/constitution.md`
 **Shared repo version**: `1.0.5`
@@ -277,3 +277,52 @@ Every feature MUST:
 Before merge, every feature MUST undergo structured review.
 
 Review must confirm:
+- Spec → Implementation → Test traceability.
+- No cross-layer leakage.
+- No duplication of domain logic.
+- No legacy artifacts.
+- Consistency with existing module structure and design patterns.
+
+#### Intentional Deviations
+
+If a feature intentionally deviates from established patterns,
+the deviation MUST be:
+
+- Documented explicitly in the feature spec.
+- Justified with trade-off analysis.
+- Approved before implementation.
+- Accompanied by updated documentation if the deviation becomes the new standard.
+
+Architectural drift across features is considered a systemic defect and MUST be corrected before merge.
+
+---
+
+### X. Deep Modules (NON-NEGOTIABLE)
+
+Every module must hide meaningful complexity behind a simple, stable interface. Thin wrappers and pass-throughs that add no logic are prohibited.
+
+**Route Handlers**
+
+- Route handlers MUST be thin: parse the request, call a service, return the response.
+- Domain logic, invariant enforcement, and multi-repository orchestration MUST NOT live in route handlers — extract to a dedicated service.
+
+**Repositories**
+
+- Repositories MUST hide all query construction, field filtering, and ownership scoping from their callers.
+- Public repository methods MUST express domain intent (`findActiveSession`, `listByAthlete`) — never query mechanics (`find({ where: { status } })`).
+- Callers MUST NOT pass raw query conditions. The method name IS the interface; the Prisma query IS the hidden implementation.
+
+**Frontend**
+
+- React components MUST NOT contain data-fetching or domain state logic.
+- Data-fetching and state management MUST be extracted to a dedicated custom hook.
+- The hook is the module; the component is the consumer. This is the test seam: components are tested by mocking the hook, hooks are tested independently.
+
+**Enforcement — Two Bright-Line Signals**
+
+A module is too shallow and MUST be refactored when either signal is present:
+
+1. **Pass-through prohibition** — a function or method that only forwards its arguments unchanged to a single dependency, with no added logic, is prohibited.
+2. **Named intent violation** — a public method name that mirrors the name of an underlying dependency method (e.g. a Prisma method) signals that the abstraction is hiding nothing meaningful.
+
+Violations of this principle are **architectural defects** and MUST be corrected before merge.
