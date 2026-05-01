@@ -71,6 +71,7 @@ The current portable set includes:
 - `handover`
 - `handover-idea`
 - `implement`
+- `ralph-loop`
 - `plan`
 - `specify`
 - `tasks`

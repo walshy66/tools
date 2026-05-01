@@ -21,6 +21,7 @@ Canonical shared content for tools and agents.
 - `handover`
 - `handover-idea`
 - `implement`
+- `ralph-loop`
 - `plan`
 - `specify`
 - `tasks`
@@ -30,3 +31,17 @@ Canonical shared content for tools and agents.
 - `portable/` — reusable, model-agnostic skills, agents, and templates
 - `pi/` — Pi-specific runtime extensions and adapters
 - `references/` — shared reference documents such as the constitution
+
+## Pi Extensions
+
+- Canonical Pi extension source for Crosby lives at `shared-workflows/pi/extensions/crosby/`
+- To make `/crosby` available in all projects, install a global re-export at:
+  - `C:/Users/camer/.pi/agent/extensions/crosby/index.ts`
+- Global re-export contents:
+
+```ts
+export { default } from "C:/Users/camer/Documents/projects/tools/shared-workflows/pi/extensions/crosby/index.ts";
+```
+
+- After adding or updating the global re-export, run `/reload` in pi
+- `/crosby` is an extension command, not a skill
