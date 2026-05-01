@@ -5,14 +5,15 @@ description: Break a plan, spec, or PRD into independently grabbable issues. Use
 
 # To Issues
 
-Convert a plan or PRD into thin, vertical-slice issues that can be worked independently.
+Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be worked independently.
 
 ## When to Use
 
-- A PRD or spec needs execution tickets
+- A PRD, spec, or plan needs execution tickets
 - You want small, independently testable slices of work
 - You need dependencies made explicit
 - You want to avoid horizontal, layer-by-layer issue breakdowns
+- You want approved slices created as Linear child issues under the originating parent issue
 
 ## Core Principles
 
@@ -21,36 +22,63 @@ Convert a plan or PRD into thin, vertical-slice issues that can be worked indepe
 3. Keep blocker relationships explicit.
 4. Separate human-decision slices from buildable slices.
 5. Prefer many thin issues over a few thick ones.
+6. Treat Linear as the committed execution view, not the drafting surface.
+7. Never create Linear sub-issues before explicit user approval.
 
 ## Workflow
 
 ### 1) Gather the source material
 - Read the plan, spec, or PRD
 - Identify the user stories and the minimum viable outcome
+- Resolve the originating Linear parent issue from the current feature context
+- If the parent issue cannot be resolved confidently, stop and ask the user
 
 ### 2) Draft slices
 - Break the work into independent vertical slices
 - Ensure each issue can be understood and tested alone
 - Label blocking dependencies clearly
+- Propose execution windows or grouping when useful
 
 ### 3) Review with the user
 - Ask whether the granularity feels right
 - Ask whether dependencies are correct
 - Ask whether any slices should be merged or split
+- Ask whether execution windows or grouping should change
+- Do not create any Linear issues yet
 
-### 4) Finalize the issue list
+### 4) Revise local planning artifacts if needed
+- If approved changes materially affect sequencing, blockers, grouping, or scope, update the relevant local planning docs before publishing
+- Typically update `plan.md` when implementation sequencing or dependency structure changes
+- Update `tasks.md` when execution windows or grouped task boundaries are part of the agreed workflow
+- Keep local planning artifacts aligned with the final approved issue structure
+
+### 5) Finalize the issue list for approval
 - Present the issue titles in dependency order
 - Include the acceptance criteria for each issue
+- Explicitly ask for approval before creating anything in Linear
+
+### 6) Create Linear sub-issues after approval
+- Only after explicit user approval, create the approved issues in Linear as child issues of the originating parent issue
+- Use the Linear CLI to create each child issue under the existing parent
+- Do not create a new parent issue
+- Report the created issue keys and URLs back to the user
 
 ## Output Format
 
-Use a numbered list where each issue includes:
+Use a numbered list where each proposed issue includes:
 
 - Title
 - Type: HITL or AFK
 - Blocked by
+- Execution window / grouping (if applicable)
 - User stories covered
 - Acceptance criteria
+
+After approval and creation, also report:
+
+- Linear parent issue
+- Created child issue keys
+- Created child issue URLs
 
 ## Quality Checks
 
@@ -58,6 +86,8 @@ Use a numbered list where each issue includes:
 - Does each issue deliver a complete vertical slice?
 - Are blockers minimal and realistic?
 - Would the issue list support incremental delivery?
+- Are the local planning artifacts still aligned with the approved issue breakdown?
+- Has explicit user approval been captured before Linear creation?
 
 ## Troubleshooting
 
@@ -69,3 +99,15 @@ Use a numbered list where each issue includes:
 
 **Dependencies are unclear**
 - Reorder the list and make blockers explicit.
+
+**Execution windows changed the structure**
+- Update `plan.md` and/or `tasks.md` before creating Linear issues.
+
+**Parent Linear issue cannot be resolved**
+- Stop and ask the user to provide or confirm the parent issue key.
+
+**User has not explicitly approved the issue set**
+- Do not create any Linear issues.
+
+**Linear CLI fails**
+- Tell the user to check Linear CLI authentication and try again.
