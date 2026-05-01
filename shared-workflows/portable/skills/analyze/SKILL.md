@@ -28,7 +28,7 @@ Analyze feature 046 for gaps and edge cases
 
 - ✅ Feature directory exists: `specs/{FEATURE_ID}/`
 - ✅ spec.md completed by design skill
-- ✅ Constitution available: `.specify/memory/constitution.md`
+- ✅ Constitution routing entrypoint available: `shared-workflows/references/constitution.md`
 
 ---
 
@@ -36,8 +36,15 @@ Analyze feature 046 for gaps and edge cases
 
 ### Phase 1: Read Context
 
-1. **Load Constitution**
-   - Note all non-negotiable rules
+1. **Load Constitution via canonical routing entrypoint**
+   - Read `shared-workflows/references/constitution.md`
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
+   - Note all applicable non-negotiable rules
 
 2. **Load Spec**
    - Read spec.md completely

@@ -12,7 +12,7 @@ This skill executes feature implementation with isolated execution windows, fres
 Ensure you have:
 1. A feature directory: `specs/{FEATURE_SLUG}/`
 2. A complete spec.md: `specs/{FEATURE_SLUG}/spec.md`
-3. Constitution file: `constitution.md` at repo root
+3. Constitution routing entrypoint: `shared-workflows/references/constitution.md`
 4. You're on the feature branch: `{FEATURE_SLUG}`
 5. Linear issue marked as "Building" (will be set automatically)
 
@@ -34,7 +34,13 @@ Invoke this skill with:
 
 2. **Verify Prerequisites**
    - Confirm spec.md exists and is readable
-   - Verify constitution.md is accessible
+   - Verify `shared-workflows/references/constitution.md` is accessible
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
    - Confirm Linear issue exists and is accessible
    - Update Linear issue status to "Building" (if not already)
    - Add comment: "Implementation started. Beginning execution windows."
@@ -138,8 +144,8 @@ End: "Building" → "Review" (comment: "Implementation complete...")
 
 ## Error Handling
 
-**Missing spec.md or constitution.md:**
-→ Stop. Show what's missing and ask user to create/locate it.
+**Missing spec.md or constitution routing entrypoint:**
+→ Stop. Show what's missing and ask user to create/locate `shared-workflows/references/constitution.md` or the spec.
 
 **Not on feature branch:**
 → Stop. Show current branch and expected feature branch.

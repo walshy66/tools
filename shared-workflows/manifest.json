@@ -25,7 +25,8 @@
     "agents": {},
     "templates": {
       "prd-template": "shared-workflows/portable/templates/prd-template.md",
-      "issue-slice-template": "shared-workflows/portable/templates/issue-slice-template.md"
+      "issue-slice-template": "shared-workflows/portable/templates/issue-slice-template.md",
+      "claude-code-project-template": "shared-workflows/portable/templates/claude-code-project-template.md"
     }
   },
   "pi": {

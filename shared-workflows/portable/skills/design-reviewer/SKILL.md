@@ -27,7 +27,7 @@ Review spec for feature 045
 
 - ✅ Feature directory exists: `specs/{FEATURE_ID}/`
 - ✅ spec.md created by Gemini (using design-gemini-prompt.md)
-- ✅ Constitution available: `.specify/memory/constitution.md`
+- ✅ Constitution routing entrypoint available: `shared-workflows/references/constitution.md`
 
 ---
 
@@ -87,13 +87,22 @@ Review spec for feature 045
 
 ### Phase 4: Constitution Compliance (5 min)
 
-8. **Check Against Key Principles**
+8. **Load Constitution via canonical routing entrypoint**
+   - Read `shared-workflows/references/constitution.md`
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
+
+9. **Check Against Key Principles**
    - Principle I: User outcomes clear? (each story has measurable outcome)
    - Principle II: Testable criteria present? (yes/no)
    - Principle VI: Backend authority respected? (if backend feature)
    - Principle VII: Lifecycle clear? (if stateful feature)
 
-9. **Report**
+10. **Report**
    ```
    CONSTITUTION COMPLIANCE:
    ✅ Principle I: User outcomes clearly defined
@@ -104,12 +113,12 @@ Review spec for feature 045
 
 ### Phase 5: Deliver Results
 
-10. **Output Validation Report**
+11. **Output Validation Report**
     - PASS: No issues, ready for plan phase
     - WARN: Non-blocking issues, proceed with notes
     - FAIL: Blocking issues, need fixes
 
-11. **Do NOT Modify Files**
+12. **Do NOT Modify Files**
     - Only report findings
     - Ask user: "Fix these or proceed as-is?"
     - Do not propose changes (that's clarify skill job)

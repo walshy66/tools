@@ -17,6 +17,7 @@ Canonical, model-agnostic skills shared across tools and projects.
 - `handover`
 - `handover-idea`
 - `implement`
+- `ralph-loop`
 - `plan`
 - `specify`
 - `tasks`

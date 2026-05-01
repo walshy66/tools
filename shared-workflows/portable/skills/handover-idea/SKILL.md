@@ -14,14 +14,16 @@ Turn a Linear issue description into a discussion-ready idea brief.
 - You want to discuss and refine the shape of the work
 - You need the issue key, title, URL, and summary details
 - You do **not** want branch creation, file writes, or Linear status updates
+- Requires Linear MCP tools to be available in the current session
 
 ## Core Principles
 
-1. **Status gate is mandatory**: only retrieve details when the Linear issue is in `Spec Creation`.
-2. **Description-first**: use the issue description as the source material; do not require a spec attachment.
-3. **Read-only only**: do not create branches, commit files, edit the issue, or transition statuses.
-4. **No guessing**: report exactly what Linear shows; do not invent missing details.
-5. **Disambiguate safely**: if multiple issues match, ask the user which one to inspect.
+1. **MCP prerequisite is mandatory**: only run if the current session exposes `mcp__claude_ai_Linear__*` tools.
+2. **Status gate is mandatory**: only retrieve details when the Linear issue is in `Spec Creation`.
+3. **Description-first**: use the issue description as the source material; do not require a spec attachment.
+4. **Read-only only**: do not create branches, commit files, edit the issue, or transition statuses.
+5. **No guessing**: report exactly what Linear shows; do not invent missing details.
+6. **Disambiguate safely**: if multiple issues match, ask the user which one to inspect.
 
 ## How to Use
 
@@ -30,14 +32,23 @@ Turn a Linear issue description into a discussion-ready idea brief.
 ```
 
 The skill should:
-1. Use the requested Linear issue key provided by the user.
-2. Open that exact issue.
-3. Block and return `No` if the issue is not in `Spec Creation`.
-4. Extract metadata only after the status check passes.
-5. Build an idea brief from the issue description and visible metadata.
-6. Return a concise discussion-ready summary.
+1. Confirm the current session exposes Linear MCP tools.
+2. Use the requested Linear issue key provided by the user.
+3. Open that exact issue.
+4. Block and return `No` if the issue is not in `Spec Creation`.
+5. Extract metadata only after the status check passes.
+6. Build an idea brief from the issue description and visible metadata.
+7. Return a concise discussion-ready summary.
 
 ## Complete Workflow
+
+### 0) Verify Linear MCP access
+Before doing anything else, confirm the session has Linear MCP tools available.
+
+Rules:
+- If `mcp__claude_ai_Linear__list_issues` / `get_issue` tools are unavailable, stop immediately.
+- Return `No` or a blocked message rather than guessing or falling back to web/manual lookup.
+- Do not proceed until Linear MCP access is present.
 
 ### 1) Find the requested issue
 Open the exact Linear issue key provided by the user.
@@ -129,8 +140,8 @@ Before returning the brief, confirm:
 **Issue is not in Spec Creation**
 - Return `No` and stop. Retrieval is blocked until the status matches.
 
-**Linear access fails**
-- Tell the user to check Linear authentication or CLI access.
+**Linear access fails / MCP missing**
+- Tell the user to check Linear MCP availability, authentication, or CLI access.
 
 ## Related Skills
 
