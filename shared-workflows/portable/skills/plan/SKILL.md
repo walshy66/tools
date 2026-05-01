@@ -21,7 +21,7 @@ In Pi:
 
 - ✅ Feature directory exists: `specs/{FEATURE_ID}/`
 - ✅ spec.md completed and clarified
-- ✅ Constitution available: `.specify/memory/constitution.md`
+- ✅ Constitution routing entrypoint available: `shared-workflows/references/constitution.md`
 - ✅ Git branch active: `{FEATURE_ID}`
 
 ---
@@ -30,7 +30,14 @@ In Pi:
 
 ### Phase 1: Read Context
 
-1. **Load Constitution**
+1. **Load Constitution via canonical routing entrypoint**
+   - Read `shared-workflows/references/constitution.md`
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
    - Note all technical constraints
    - Note all testing requirements
    - Note all architectural rules

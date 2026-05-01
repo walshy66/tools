@@ -22,7 +22,7 @@ In Pi:
 - ✅ Feature directory exists: `specs/{FEATURE_ID}/`
 - ✅ spec.md completed
 - ✅ Optional: analyze report available (to guide improvements)
-- ✅ Constitution available: `.specify/memory/constitution.md`
+- ✅ Constitution routing entrypoint available: `shared-workflows/references/constitution.md`
 
 ---
 
@@ -31,7 +31,13 @@ In Pi:
 ### Phase 1: Review & Planning
 
 1. **Load Context**
-   - Read constitution
+   - Read `shared-workflows/references/constitution.md`
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
    - Read spec.md
    - Load analyze report (if exists)
 

@@ -17,6 +17,7 @@
       "design": "shared-workflows/portable/skills/design/SKILL.md",
       "handover": "shared-workflows/portable/skills/handover/SKILL.md",
       "implement": "shared-workflows/portable/skills/implement/SKILL.md",
+      "ralph-loop": "shared-workflows/portable/skills/ralph-loop/SKILL.md",
       "plan": "shared-workflows/portable/skills/plan/SKILL.md",
       "specify": "shared-workflows/portable/skills/specify/SKILL.md",
       "tasks": "shared-workflows/portable/skills/tasks/SKILL.md"
@@ -24,7 +25,8 @@
     "agents": {},
     "templates": {
       "prd-template": "shared-workflows/portable/templates/prd-template.md",
-      "issue-slice-template": "shared-workflows/portable/templates/issue-slice-template.md"
+      "issue-slice-template": "shared-workflows/portable/templates/issue-slice-template.md",
+      "claude-code-project-template": "shared-workflows/portable/templates/claude-code-project-template.md"
     }
   },
   "pi": {

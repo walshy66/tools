@@ -43,9 +43,15 @@ Example:
    - Read `specs/{FEATURE-SLUG}/plan.md` — intended architecture and data model
    - Read `specs/{FEATURE-SLUG}/tasks.md` — task list to verify completeness
 
-3. **Load constitution**
-   - Read `constitution.md` at repo root
-   - Note all non-negotiable principles relevant to this feature
+3. **Load constitution via canonical routing entrypoint**
+   - Read `shared-workflows/references/constitution.md`
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
+   - Note all applicable non-negotiable principles relevant to this feature
 
 4. **Get git diff**
    ```bash

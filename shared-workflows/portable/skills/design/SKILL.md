@@ -23,7 +23,7 @@ The skill reads the existing spec.md from the current feature branch and enhance
 
 - ✅ Feature directory exists: `specs/{FEATURE-SLUG}/`
 - ✅ `spec.md` present (from Linear handover)
-- ✅ Constitution available: `constitution.md` at repo root
+- ✅ Constitution routing entrypoint available: `shared-workflows/references/constitution.md`
 - ✅ Git branch active: `{FEATURE-SLUG}`
 
 ---
@@ -32,9 +32,15 @@ The skill reads the existing spec.md from the current feature branch and enhance
 
 ### Phase 1: Load All Context
 
-1. **Load Constitution**
-   - Read `constitution.md` at repo root
-   - Extract all non-negotiable principles
+1. **Load Constitution via canonical routing entrypoint**
+   - Read `shared-workflows/references/constitution.md`
+   - For this hard-gated skill, require exactly one valid work-type selector:
+     - Linear label: `wt:development` or `wt:process-automation`
+     - Non-Linear prompt header: `Work Type: development` or `Work Type: process-automation`
+   - If the selector is missing, invalid, or duplicated, stop with recovery guidance
+   - If the selector conflicts with the issue narrative, warn and proceed by selector
+   - Load `## Core` plus the mapped work-type document
+   - Extract all applicable non-negotiable principles
    - Note: identity boundary rules, backend authority, test-first, AppShell rules, accessibility, lifecycle invariants
 
 2. **Load Existing spec.md**

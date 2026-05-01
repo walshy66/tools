@@ -1,6 +1,6 @@
 # tools
 
-**Version:** `1.0.5`
+**Version:** `1.0.6`
 
 Shared workflow and agent assets for multiple tools.
 
@@ -15,6 +15,7 @@ Shared workflow and agent assets for multiple tools.
 - The constitution is stored canonically at `shared-workflows/references/constitution.md`.
 - Projects should use a root-level `constitution.md` symlink to that canonical file when possible.
 - If a symlink is not possible on a platform, use a direct copy and keep it in sync with the canonical file.
+- Claude Code project starters now live in `shared-workflows/portable/templates/claude-code-project-template.md`.
 
 ## Layout
 
@@ -37,6 +38,7 @@ shared-workflows/
 - Keep Pi-specific runtime behavior isolated in `pi/extensions/`.
 - Use direct manifest reading so tools resolve the shared source of truth instead of maintaining separate local copies.
 - Prefer symlinks for project-facing constitution access; use copies only as a fallback when symlinks are not available.
+- Keep Claude Code project scaffolding in shared templates and copy it into each project as needed.
 
 ## How Updates Propagate
 
@@ -71,9 +73,22 @@ The current portable set includes:
 - `handover`
 - `handover-idea`
 - `implement`
+- `ralph-loop`
 - `plan`
 - `specify`
 - `tasks`
+
+The current portable templates include:
+
+- `prd-template`
+- `issue-slice-template`
+- `claude-code-project-template`
+
+The current portable templates include:
+
+- `prd-template`
+- `issue-slice-template`
+- `claude-code-project-template`
 
 ## Notes
 

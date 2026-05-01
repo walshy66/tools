@@ -21,6 +21,7 @@ Canonical shared content for tools and agents.
 - `handover`
 - `handover-idea`
 - `implement`
+- `ralph-loop`
 - `plan`
 - `specify`
 - `tasks`
