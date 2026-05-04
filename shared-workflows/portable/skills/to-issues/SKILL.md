@@ -60,8 +60,12 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 ### 6) Create Linear sub-issues after approval
 - Only after explicit user approval, create the approved issues in Linear as child issues of the originating parent issue
 - Use the Linear CLI to create each child issue under the existing parent
+- Set the initial Linear state when creating each child issue:
+  - `AFK` issues → `Ready to Build`
+  - `HITL` issues → `Backlog`
+- Do not leave the initial state to Linear defaults when the issue type is known
 - Do not create a new parent issue
-- Report the created issue keys and URLs back to the user
+- Report the created issue keys, URLs, and initial states back to the user
 
 ## Output Format
 
@@ -79,6 +83,7 @@ After approval and creation, also report:
 - Linear parent issue
 - Created child issue keys
 - Created child issue URLs
+- Created child initial states
 
 ## Quality Checks
 
@@ -111,3 +116,9 @@ After approval and creation, also report:
 
 **Linear CLI fails**
 - Tell the user to check Linear CLI authentication and try again.
+
+**Created issues landed in the wrong default state**
+- Re-run creation or immediately correct the child issue states based on type:
+  - `AFK` → `Ready to Build`
+  - `HITL` → `Backlog`
+- Do not leave typed execution issues in an unintended default workflow state.
