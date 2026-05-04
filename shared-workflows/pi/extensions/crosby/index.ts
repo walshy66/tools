@@ -1,22 +1,104 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fetchParentQueue, parseSingleIssueKeyArg, runQueueExecution } from "./lib.mjs";
+import {
+  fetchParentQueue,
+  finalizeParentAfterReview,
+  parseCrosbyCommandArgs,
+  runQueueExecution,
+  runWatchMode,
+} from "./lib-v2.mjs";
+
+function getLinearInvocation(args: string[]) {
+  const configured = process.env.LINEAR_BIN?.trim();
+  if (configured) {
+    return { command: configured, args };
+  }
+
+  const appData = process.env.APPDATA;
+  if (process.platform === "win32" && appData) {
+    const runnerScript = path.join(appData, "npm", "node_modules", "@kyaukyuai", "linear-cli", "run-linear.js");
+    if (existsSync(runnerScript)) {
+      return { command: process.execPath, args: [runnerScript, ...args] };
+    }
+  }
+
+  return { command: "linear", args };
+}
+
+function getGhInvocation(args: string[]) {
+  const configured = process.env.GH_BIN?.trim();
+  return { command: configured || "gh", args };
+}
+
+function getGitInvocation(args: string[]) {
+  const configured = process.env.GIT_BIN?.trim();
+  return { command: configured || "git", args };
+}
+
+const DEFAULT_CROSBY_PI_MODEL = process.env.CROSBY_PI_MODEL?.trim() || "openai/gpt-5.5";
+const DEFAULT_CROSBY_CLAUDE_MODEL = process.env.CROSBY_CLAUDE_MODEL?.trim() || "claude-sonnet-4-6";
+const DEFAULT_CROSBY_CLAUDE_EFFORT = process.env.CROSBY_CLAUDE_EFFORT?.trim() || "medium";
+
+function getClaudeInvocation(args: string[]) {
+  const configured = process.env.CLAUDE_BIN?.trim();
+  return { command: configured || "claude", args };
+}
+
+async function loadIssueLabelsFromLinear(pi: ExtensionAPI, issueKey: string) {
+  const invocation = getLinearInvocation([
+    "api",
+    'query($id:String!){ issue(id:$id){ labels { nodes { name } } } }',
+    "--variable",
+    `id=${issueKey}`,
+  ]);
+  const result = await pi.exec(invocation.command, invocation.args);
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Failed to load labels for ${issueKey} from Linear. ${details}`
+        : `Failed to load labels for ${issueKey} from Linear. Linear command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+
+  try {
+    return JSON.parse(result.stdout)?.data?.issue?.labels ?? { nodes: [] };
+  } catch (error) {
+    throw new Error(
+      `Failed to parse Linear label data for ${issueKey}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 
 async function loadIssueFromLinear(pi: ExtensionAPI, issueKey: string) {
-  const result = await pi.exec("linear", ["issue", "view", issueKey, "--json"]);
+  const invocation = getLinearInvocation(["issue", "view", issueKey, "--json"]);
+  const result = await pi.exec(invocation.command, invocation.args);
 
   if (result.code !== 0) {
     const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
     throw new Error(
       details
         ? `Failed to load ${issueKey} from Linear. ${details}`
-        : `Failed to load ${issueKey} from Linear. Check Linear CLI authentication and try again.`,
+        : `Failed to load ${issueKey} from Linear. Linear command: ${invocation.command}. Exit code: ${result.code}.`,
     );
   }
 
   try {
-    return JSON.parse(result.stdout);
+    const issue = JSON.parse(result.stdout);
+    const labelTargets = [issue, ...(Array.isArray(issue?.children) ? issue.children : [])].filter(
+      (target) => target?.identifier && !target?.labels,
+    );
+
+    await Promise.all(
+      labelTargets.map(async (target) => {
+        target.labels = await loadIssueLabelsFromLinear(pi, target.identifier);
+      }),
+    );
+
+    return issue;
   } catch (error) {
     throw new Error(
       `Failed to parse Linear queue data for ${issueKey}: ${error instanceof Error ? error.message : String(error)}`,
@@ -24,21 +106,69 @@ async function loadIssueFromLinear(pi: ExtensionAPI, issueKey: string) {
   }
 }
 
-async function moveIssue(pi: ExtensionAPI, issueKey: string, state: string) {
-  const result = await pi.exec("linear", ["issue", "move", issueKey, state]);
+async function loadIssuesByStateFromLinear(pi: ExtensionAPI, stateName: string) {
+  const invocation = getLinearInvocation([
+    "api",
+    `query($stateName:String!){ issues(filter: { state: { name: { eq: $stateName } } }) { nodes { identifier title priority state { name type } parent { identifier title } labels { nodes { name } } } } }`,
+    "--variable",
+    `stateName=${stateName}`,
+  ]);
+  const result = await pi.exec(invocation.command, invocation.args);
 
   if (result.code !== 0) {
     const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
     throw new Error(
       details
-        ? `Failed to move ${issueKey} to ${state}. ${details}`
-        : `Failed to move ${issueKey} to ${state}. Check Linear CLI authentication and try again.`,
+        ? `Failed to load ${stateName} issues from Linear. ${details}`
+        : `Failed to load ${stateName} issues from Linear. Linear command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+
+  try {
+    const payload = JSON.parse(result.stdout);
+    return payload?.data?.issues?.nodes ?? [];
+  } catch (error) {
+    throw new Error(
+      `Failed to parse ${stateName} issue data from Linear: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function loadExecuteParentQueuesFromLinear(pi: ExtensionAPI) {
+  const executeIssues = await loadIssuesByStateFromLinear(pi, "Execute");
+  const executeParents = executeIssues.filter((issue) => issue?.identifier && !issue?.parent);
+  return Promise.all(executeParents.map((issue) => fetchParentQueue(issue.identifier, (key) => loadIssueFromLinear(pi, key))));
+}
+
+function normalizeTargetState(state: string, issueKey?: string) {
+  switch (state) {
+    case "Building":
+      return issueKey && /^COA-\d+$/i.test(issueKey) ? "Build" : "Building";
+    case "Review":
+      return "In Review";
+    default:
+      return state;
+  }
+}
+
+async function moveIssue(pi: ExtensionAPI, issueKey: string, state: string) {
+  const targetState = normalizeTargetState(state, issueKey);
+  const invocation = getLinearInvocation(["issue", "move", issueKey, targetState]);
+  const result = await pi.exec(invocation.command, invocation.args);
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Failed to move ${issueKey} to ${targetState}. ${details}`
+        : `Failed to move ${issueKey} to ${targetState}. Check Linear CLI authentication and try again.`,
     );
   }
 }
 
 async function addIssueComment(pi: ExtensionAPI, issueKey: string, body: string) {
-  const result = await pi.exec("linear", ["issue", "comment", "add", issueKey, body]);
+  const invocation = getLinearInvocation(["issue", "comment", "add", issueKey, body]);
+  const result = await pi.exec(invocation.command, invocation.args);
 
   if (result.code !== 0) {
     const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
@@ -48,6 +178,204 @@ async function addIssueComment(pi: ExtensionAPI, issueKey: string, body: string)
         : `Failed to add comment to ${issueKey}. Check Linear CLI authentication and try again.`,
     );
   }
+}
+
+async function getPullRequestForBranch(pi: ExtensionAPI, branchName: string | undefined, cwd: string) {
+  const invocation = getGhInvocation([
+    "pr",
+    "view",
+    ...(branchName ? [branchName] : []),
+    "--json",
+    "number,url,body,headRefName",
+  ]);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Failed to load pull request details for branch ${branchName ?? "current"}. ${details}`
+        : `Failed to load pull request details for branch ${branchName ?? "current"}. GitHub command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse pull request details for branch ${branchName ?? "current"}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function updatePullRequestBody(pi: ExtensionAPI, prNumber: number, body: string, cwd: string) {
+  const invocation = getGhInvocation(["pr", "edit", String(prNumber), "--body", body]);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Failed to update PR #${prNumber} description. ${details}`
+        : `Failed to update PR #${prNumber} description. GitHub command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+}
+
+async function addPullRequestComment(pi: ExtensionAPI, prNumber: number, body: string, cwd: string) {
+  const invocation = getGhInvocation(["pr", "comment", String(prNumber), "--body", body]);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Failed to add PR comment to #${prNumber}. ${details}`
+        : `Failed to add PR comment to #${prNumber}. GitHub command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+}
+
+async function readImplementationSummary(cwd: string) {
+  const summaryPath = path.join(cwd, "implementation_summary.md");
+  try {
+    return await readFile(summaryPath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `Failed to read implementation_summary.md from ${summaryPath}. ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function execGit(pi: ExtensionAPI, args: string[], cwd: string) {
+  const invocation = getGitInvocation(args);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Git command failed in ${cwd}. ${details}`
+        : `Git command failed in ${cwd}. Command: ${invocation.command} ${invocation.args.join(" ")}. Exit code: ${result.code}.`,
+    );
+  }
+
+  return result;
+}
+
+async function isGitRepository(pi: ExtensionAPI, cwd: string) {
+  const invocation = getGitInvocation(["rev-parse", "--is-inside-work-tree"]);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+  return result.code === 0 && result.stdout.trim() === "true";
+}
+
+async function getCurrentGitBranch(pi: ExtensionAPI, cwd: string) {
+  const result = await execGit(pi, ["branch", "--show-current"], cwd);
+  return result.stdout.trim();
+}
+
+async function hasLocalGitBranch(pi: ExtensionAPI, cwd: string, branchName: string) {
+  const result = await execGit(pi, ["branch", "--list", branchName], cwd);
+  return result.stdout.trim().length > 0;
+}
+
+async function hasRemoteGitBranch(pi: ExtensionAPI, cwd: string, branchName: string) {
+  const result = await execGit(pi, ["branch", "-r", "--list", `origin/${branchName}`], cwd);
+  return result.stdout.trim().length > 0;
+}
+
+async function hasUncommittedGitChanges(pi: ExtensionAPI, cwd: string) {
+  const result = await execGit(pi, ["status", "--short"], cwd);
+  return result.stdout.trim().length > 0;
+}
+
+async function ensureParentBranch(pi: ExtensionAPI, parentIssue: any, cwd?: string) {
+  const issueKey = parentIssue?.identifier ?? "UNKNOWN-PARENT";
+  const branchName = String(parentIssue?.branchName ?? "").trim();
+
+  if (!cwd) {
+    throw new Error(
+      `Cannot ensure the feature branch for ${issueKey} because no local project directory was resolved. Recovery: add a folder label matching the local repo, then rerun /crosby ${issueKey}.`,
+    );
+  }
+
+  if (!branchName) {
+    throw new Error(
+      `Parent issue ${issueKey} is missing a Linear branch name. Recovery: set the parent branch in Linear, then rerun /crosby ${issueKey}.`,
+    );
+  }
+
+  if (!(await isGitRepository(pi, cwd))) {
+    throw new Error(
+      `Resolved project directory ${cwd} for parent ${issueKey} is not a git repository. Recovery: point the issue label at the correct local repo folder, or initialize/clone the repo there, then rerun /crosby ${issueKey}.`,
+    );
+  }
+
+  const currentBranch = await getCurrentGitBranch(pi, cwd);
+  if (currentBranch === branchName) return;
+
+  if (await hasUncommittedGitChanges(pi, cwd)) {
+    throw new Error(
+      `Cannot switch ${cwd} from branch ${currentBranch || "(detached HEAD)"} to ${branchName} for parent ${issueKey} because the working tree has uncommitted changes. Recovery: commit, stash, or discard the local changes in ${cwd}, then rerun /crosby ${issueKey}.`,
+    );
+  }
+
+  if (await hasLocalGitBranch(pi, cwd, branchName)) {
+    await execGit(pi, ["checkout", branchName], cwd);
+  } else if (await hasRemoteGitBranch(pi, cwd, branchName)) {
+    await execGit(pi, ["checkout", "-b", branchName, "--track", `origin/${branchName}`], cwd);
+  } else {
+    await execGit(pi, ["checkout", "-b", branchName], cwd);
+  }
+
+  const verifiedBranch = await getCurrentGitBranch(pi, cwd);
+  if (verifiedBranch !== branchName) {
+    throw new Error(
+      `Expected repo in ${cwd} to be on branch ${branchName} for ${issueKey}, but found ${verifiedBranch || "(detached HEAD)"}. Recovery: switch to ${branchName} manually, then rerun /crosby ${issueKey}.`,
+    );
+  }
+}
+
+async function runClaudeReviewWorker(pi: ExtensionAPI, prompt: string, cwd: string) {
+  const schema = JSON.stringify({
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      outcome: { type: "string", enum: ["clean", "fixed", "error"] },
+      summary: { type: "string" },
+      changes: { type: "array", items: { type: "string" } },
+      tests: { type: "array", items: { type: "string" } },
+      remainingConcerns: { type: "array", items: { type: "string" } },
+      commits: { type: "array", items: { type: "string" } },
+    },
+    required: ["outcome", "summary", "changes", "tests", "remainingConcerns", "commits"],
+  });
+  const invocation = getClaudeInvocation([
+    "-p",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "bypassPermissions",
+    "--model",
+    DEFAULT_CROSBY_CLAUDE_MODEL,
+    "--effort",
+    DEFAULT_CROSBY_CLAUDE_EFFORT,
+    "--json-schema",
+    schema,
+    prompt,
+  ]);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Claude review worker failed. ${details}`
+        : `Claude review worker failed. Claude command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+
+  return result;
 }
 
 function getPiInvocation() {
@@ -67,9 +395,13 @@ function getPiInvocation() {
   return { command: "pi", args: [] };
 }
 
-async function runIsolatedWorker(pi: ExtensionAPI, prompt: string) {
+async function runIsolatedWorker(pi: ExtensionAPI, prompt: string, cwd?: string) {
   const invocation = getPiInvocation();
-  const result = await pi.exec(invocation.command, [...invocation.args, "--mode", "text", "-p", "--no-session", prompt]);
+  const result = await pi.exec(
+    invocation.command,
+    [...invocation.args, "--model", DEFAULT_CROSBY_PI_MODEL, "--mode", "text", "-p", "--no-session", prompt],
+    cwd ? { cwd } : undefined,
+  );
 
   if (result.code !== 0) {
     const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
@@ -85,16 +417,73 @@ async function runIsolatedWorker(pi: ExtensionAPI, prompt: string) {
 
 export default function crosbyExtension(pi: ExtensionAPI) {
   pi.registerCommand("crosby", {
-    description: "Validate a parent Linear issue, claim one runnable child, and launch an isolated worker", 
+    description: "Validate a parent Linear issue or start watch mode for parent issues in Execute",
     handler: async (args, ctx) => {
       try {
-        const issueKey = parseSingleIssueKeyArg(args);
+        const command = parseCrosbyCommandArgs(args);
+
+        if (command.mode === "watch") {
+          ctx.ui.notify("Crosby watch mode started. Polling parent issues in Execute every 60s.", "success");
+          await runWatchMode(
+            {
+              fetchExecuteParentQueues: () => loadExecuteParentQueuesFromLinear(pi),
+              moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
+              addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
+              runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
+              ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
+              refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
+              finalizeParentCompletion: (finalQueue, completedChildren) =>
+                finalizeParentAfterReview(finalQueue, completedChildren, {
+                  getPullRequest: ({ branchName, cwd }) => getPullRequestForBranch(pi, branchName, cwd),
+                  readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
+                  updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
+                  runClaudeReview: ({ prompt, cwd }) => runClaudeReviewWorker(pi, prompt, cwd),
+                  addPullRequestComment: ({ prNumber, body, cwd }) => addPullRequestComment(pi, prNumber, body, cwd),
+                  addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
+                  moveParentToReview: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
+                }),
+            },
+            {
+              pollIntervalMs: 60000,
+              onCycle: async (cycle) => {
+                for (const routingError of cycle.routingErrors ?? []) {
+                  ctx.ui.notify(routingError.message, "error");
+                }
+                if (cycle.status === "processed") {
+                  ctx.ui.notify(`Processed ${cycle.issue.identifier} under ${cycle.parent?.identifier ?? "the active parent"}.`, "success");
+                  return;
+                }
+                if (cycle.status === "fatal") {
+                  ctx.ui.notify(cycle.errorMessage ?? `Worker failed for ${cycle.issue?.identifier ?? "the active issue"}.`, "error");
+                  return;
+                }
+                if (cycle.status === "error") {
+                  ctx.ui.notify(cycle.errorMessage ?? "Crosby watch mode cycle failed.", "error");
+                }
+              },
+            },
+          );
+          return;
+        }
+
+        const issueKey = command.issueKey;
         const queue = await fetchParentQueue(issueKey, (key) => loadIssueFromLinear(pi, key));
         const execution = await runQueueExecution(queue, {
           moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
           addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-          runWorker: ({ prompt }) => runIsolatedWorker(pi, prompt),
+          runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
+          ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
           refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
+          finalizeParentCompletion: (finalQueue, completedChildren) =>
+            finalizeParentAfterReview(finalQueue, completedChildren, {
+              getPullRequest: ({ branchName, cwd }) => getPullRequestForBranch(pi, branchName, cwd),
+              readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
+              updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
+              runClaudeReview: ({ prompt, cwd }) => runClaudeReviewWorker(pi, prompt, cwd),
+              addPullRequestComment: ({ prNumber, body, cwd }) => addPullRequestComment(pi, prNumber, body, cwd),
+              addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
+              moveParentToReview: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
+            }),
         });
 
         pi.appendEntry("crosby-queue-loaded", {
@@ -102,6 +491,11 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           parentTitle: queue.parent.title,
           childCount: queue.children.length,
           childKeys: queue.children.map((child) => child.identifier),
+          childStates: queue.children.map((child) => ({
+            issueKey: child.identifier,
+            stateName: child?.state?.name ?? null,
+            stateType: child?.state?.type ?? null,
+          })),
           completedChildKeys: execution.completedChildren.map((entry) => entry.child.identifier),
           completedChildOutcomes: execution.completedChildren.map((entry) => ({
             issueKey: entry.child.identifier,

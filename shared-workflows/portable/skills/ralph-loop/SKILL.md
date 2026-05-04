@@ -43,6 +43,9 @@ For non-Linear work, do not use this skill unless the work has been formalized i
 
 ### 0) Resolve and validate the issue
 - Fetch the supplied Linear issue.
+- Use the Linear CLI explicitly for this step: `linear issue view <ISSUE-KEY> --json`.
+- In isolated worker runs launched by other automation, assume the Linear CLI is available unless that command actually fails.
+- Do not report "I can't talk to Linear" or equivalent unless you have attempted the CLI command in the current run and include the real failure.
 - Confirm it is a **single execution issue**, not a parent container for multiple active slices.
 - Read:
   - issue title

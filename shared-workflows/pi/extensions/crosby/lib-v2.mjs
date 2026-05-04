@@ -411,6 +411,181 @@ export function buildFinalParentSummary(queue, completedChildren = []) {
   ].join("\n");
 }
 
+export function mergeImplementationSummaryIntoPrBody(existingBody, implementationSummary) {
+  const heading = "## Implementation Summary";
+  const summary = String(implementationSummary ?? "").trim();
+  const body = String(existingBody ?? "").trim();
+
+  if (!summary) return body;
+
+  const section = `${heading}\n\n${summary}`;
+  if (!body) return section;
+
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`${escapedHeading}[\\s\\S]*$`, "i");
+  if (pattern.test(body)) {
+    return body.replace(pattern, section).trim();
+  }
+
+  return `${body}\n\n${section}`.trim();
+}
+
+export function buildClaudeReviewPrompt({ parent, pullRequest, implementationSummary }) {
+  const summary = String(implementationSummary ?? "").trim();
+  const prUrl = pullRequest?.url ?? "unknown";
+  const branchName = pullRequest?.headRefName ?? parent?.branchName ?? "unknown";
+
+  return [
+    `Review parent issue ${parent?.identifier ?? "UNKNOWN"} — ${parent?.title ?? "Unknown parent issue"}.`,
+    `Repository branch: ${branchName}`,
+    `Pull request: ${prUrl}`,
+    "",
+    "Tasks:",
+    "1. Review the current branch diff for correctness, quality, and completeness.",
+    "2. Make any necessary fixes directly in the working tree.",
+    "3. Run the smallest relevant verification for any fixes you make.",
+    "4. If you changed files, create a git commit describing the review fixes.",
+    "5. Do not merge the PR.",
+    "6. Return JSON only using the provided schema.",
+    "",
+    "Implementation summary content that must be reflected in the PR description:",
+    summary || "(implementation_summary.md was empty)",
+  ].join("\n");
+}
+
+export function buildPullRequestReviewComment(reviewResult) {
+  const outcomeLabel =
+    reviewResult?.outcome === "fixed" ? "Fixed issues" : reviewResult?.outcome === "clean" ? "No fixes needed" : "Review failed";
+
+  return [
+    "## Claude review",
+    "",
+    `Outcome: ${outcomeLabel}`,
+    "",
+    `Summary: ${reviewResult?.summary ?? "No summary provided."}`,
+    "",
+    "Changes made:",
+    formatBulletList(reviewResult?.changes, "- None."),
+    "",
+    "Tests / verifications:",
+    formatBulletList(reviewResult?.tests, "- None."),
+    "",
+    "Commits:",
+    formatBulletList(reviewResult?.commits, "- None."),
+    "",
+    "Remaining concerns:",
+    formatBulletList(reviewResult?.remainingConcerns, "- None."),
+  ].join("\n");
+}
+
+export function buildFinalParentSummaryWithReview(queue, completedChildren = [], pullRequest, reviewResult) {
+  return [
+    buildFinalParentSummary(queue, completedChildren),
+    "",
+    "Pull request review:",
+    `- PR: ${pullRequest?.url ?? "unknown"}`,
+    `- Outcome: ${reviewResult?.outcome ?? "error"}`,
+    `- Summary: ${reviewResult?.summary ?? "No summary provided."}`,
+    `- Commits: ${Array.isArray(reviewResult?.commits) && reviewResult.commits.length > 0 ? reviewResult.commits.join("; ") : "None."}`,
+    `- Remaining concerns: ${Array.isArray(reviewResult?.remainingConcerns) && reviewResult.remainingConcerns.length > 0 ? reviewResult.remainingConcerns.join("; ") : "None."}`,
+  ].join("\n");
+}
+
+function parseClaudeReviewWorkerResult(workerResult) {
+  const rawOutput = String(workerResult?.stdout ?? "").trim();
+  if (!rawOutput) {
+    throw new Error("Claude review result missing. Recovery: rerun the automated review worker and ensure it returns JSON only.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawOutput);
+  } catch {
+    throw new Error("Claude review result was not valid JSON. Recovery: rerun the automated review worker with the structured JSON schema.");
+  }
+
+  if (!["clean", "fixed", "error"].includes(parsed?.outcome)) {
+    throw new Error(`Claude review result has invalid outcome '${parsed?.outcome ?? ""}'.`);
+  }
+
+  if (typeof parsed?.summary !== "string" || parsed.summary.trim() === "") {
+    throw new Error("Claude review result missing required field 'summary'.");
+  }
+
+  for (const field of ["changes", "tests", "remainingConcerns", "commits"]) {
+    if (!Array.isArray(parsed?.[field]) || parsed[field].some((entry) => typeof entry !== "string" || entry.trim() === "")) {
+      throw new Error(`Claude review result missing required field '${field}'.`);
+    }
+  }
+
+  return parsed;
+}
+
+export async function finalizeParentAfterReview(queue, completedChildren, operations) {
+  if (!areAllChildrenDone(queue?.children)) return;
+
+  const routingTarget = queue?.parent?.labels ? queue.parent : (queue?.children ?? []).find((child) => child?.labels) ?? queue?.parent;
+  const routing = resolveIssueWorkingDirectory(routingTarget, operations.routing);
+  const pullRequest = await operations.getPullRequest({
+    parent: queue.parent,
+    branchName: queue?.parent?.branchName,
+    cwd: routing.cwd,
+  });
+  const implementationSummary = await operations.readImplementationSummary({
+    parent: queue.parent,
+    cwd: routing.cwd,
+  });
+
+  const nextBody = mergeImplementationSummaryIntoPrBody(pullRequest?.body ?? "", implementationSummary);
+  await operations.updatePullRequest({
+    parent: queue.parent,
+    pullRequest,
+    prNumber: pullRequest.number,
+    body: nextBody,
+    cwd: routing.cwd,
+  });
+
+  const prompt = buildClaudeReviewPrompt({
+    parent: queue.parent,
+    pullRequest,
+    implementationSummary,
+  });
+
+  let reviewResult;
+  try {
+    const rawReviewResult = await operations.runClaudeReview({
+      parent: queue.parent,
+      pullRequest,
+      prompt,
+      cwd: routing.cwd,
+    });
+    reviewResult = parseClaudeReviewWorkerResult(rawReviewResult);
+  } catch (error) {
+    reviewResult = {
+      outcome: "error",
+      summary: "Claude automated review did not complete successfully.",
+      changes: [],
+      tests: [],
+      commits: [],
+      remainingConcerns: [error instanceof Error ? error.message : String(error)],
+    };
+  }
+
+  await operations.addPullRequestComment({
+    parent: queue.parent,
+    pullRequest,
+    prNumber: pullRequest.number,
+    body: buildPullRequestReviewComment(reviewResult),
+    cwd: routing.cwd,
+  });
+
+  await operations.addParentComment(
+    queue.parent.identifier,
+    buildFinalParentSummaryWithReview(queue, completedChildren, pullRequest, reviewResult),
+  );
+  await operations.moveParentToReview(queue.parent.identifier, "Review");
+}
+
 async function reportChildOutcomeToParent(queue, execution, addComment) {
   try {
     await addComment(queue.parent.identifier, buildParentProgressComment(execution));
@@ -645,7 +820,11 @@ export async function runQueueExecution(initialQueue, operations) {
 
     await reportChildOutcomeToParent(queue, execution, operations.addComment);
     queue = await operations.refreshQueue(queue.parent.identifier);
-    await finalizeParentIfComplete(queue, completedChildren, operations);
+    await finalizeParentIfComplete(queue, completedChildren, {
+      addComment: operations.addComment,
+      moveIssue: operations.moveIssue,
+      finalizeParentCompletion: operations.finalizeParentCompletion,
+    });
   }
 }
 
