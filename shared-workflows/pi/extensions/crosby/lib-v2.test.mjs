@@ -1,16 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { finalizeParentAfterReview, runWatchCycle, runWatchMode } from "./lib-v2.mjs";
+import { parseCrosbyCommandArgs, publishParentPullRequest, reviewParentPullRequest, runWatchCycle, runWatchMode } from "./lib-v2.mjs";
 
 test("runWatchCycle keeps fatal worker issues in Build and does not move them to review", async () => {
   const moved = [];
   const result = await runWatchCycle({
-    fetchExecuteIssues: async () => [
+    fetchExecuteParentQueues: async () => [
       {
-        identifier: "COA-135",
-        title: "Failure handling and daemon resilience",
-        state: { name: "Execute", type: "started" },
-        parent: { identifier: "COA-129", title: "Symphony" },
+        parent: {
+          identifier: "COA-129",
+          title: "Symphony",
+          state: { name: "Execute", type: "started" },
+        },
+        children: [
+          {
+            identifier: "COA-135",
+            title: "Failure handling and daemon resilience",
+            state: { name: "Ready to Build", type: "unstarted" },
+          },
+        ],
       },
     ],
     moveIssue: async (issueKey, state) => moved.push([issueKey, state]),
@@ -39,23 +47,31 @@ test("runWatchMode continues polling after a fatal worker result", async () => {
 
   const result = await runWatchMode(
     {
-      fetchExecuteIssues: async () => {
+      fetchExecuteParentQueues: async () => {
         cycleCount += 1;
         return cycleCount === 1
           ? [
               {
-                identifier: "COA-135",
-                title: "Failure handling and daemon resilience",
-                state: { name: "Execute", type: "started" },
-                parent: { identifier: "COA-129", title: "Symphony" },
+                parent: { identifier: "COA-129", title: "Symphony", state: { name: "Execute", type: "started" } },
+                children: [
+                  {
+                    identifier: "COA-135",
+                    title: "Failure handling and daemon resilience",
+                    state: { name: "Ready to Build", type: "unstarted" },
+                  },
+                ],
               },
             ]
           : [
               {
-                identifier: "COA-136",
-                title: "Next issue",
-                state: { name: "Execute", type: "started" },
-                parent: { identifier: "COA-129", title: "Symphony" },
+                parent: { identifier: "COA-129", title: "Symphony", state: { name: "Execute", type: "started" } },
+                children: [
+                  {
+                    identifier: "COA-136",
+                    title: "Next issue",
+                    state: { name: "Ready to Build", type: "unstarted" },
+                  },
+                ],
               },
             ];
       },
@@ -83,6 +99,11 @@ test("runWatchMode continues polling after a fatal worker result", async () => {
               },
         ),
       }),
+      addComment: async () => {},
+      refreshQueue: async () => ({
+        parent: { identifier: "COA-129", title: "Symphony", state: { name: "Building", type: "started" } },
+        children: [{ identifier: "COA-136", title: "Next issue", state: { name: "Done", type: "completed" } }],
+      }),
       sleep: async () => {},
     },
     {
@@ -102,13 +123,56 @@ test("runWatchMode continues polling after a fatal worker result", async () => {
   assert.deepEqual(moved, [
     ["COA-135", "Building"],
     ["COA-136", "Building"],
-    ["COA-136", "In Review"],
+    ["COA-136", "Done"],
+    ["COA-129", "Review"],
   ]);
 });
 
-test("finalizeParentAfterReview still moves parent to review and comments when Claude review fails", async () => {
+test("parseCrosbyCommandArgs supports push and review commands", async () => {
+  assert.deepEqual(parseCrosbyCommandArgs("COA-13"), { mode: "parent", issueKey: "COA-13" });
+  assert.deepEqual(parseCrosbyCommandArgs("--watch"), { mode: "watch" });
+  assert.deepEqual(parseCrosbyCommandArgs("push COA-13"), { mode: "push", issueKey: "COA-13" });
+  assert.deepEqual(parseCrosbyCommandArgs("review COA-13"), { mode: "review", issueKey: "COA-13" });
+});
+
+test("publishParentPullRequest pushes branch and creates PR when missing", async () => {
   const calls = [];
-  await finalizeParentAfterReview(
+  const pullRequest = await publishParentPullRequest(
+    {
+      parent: {
+        identifier: "COA-129",
+        title: "Symphony",
+        branchName: "test-branch",
+        labels: { nodes: [{ name: "tools" }] },
+      },
+      children: [{ identifier: "COA-135", title: "Failure handling and daemon resilience", state: { name: "Done" } }],
+    },
+    [],
+    {
+      routing: { documentsRoot: "C:/Users/camer/Documents", projectsRoot: "C:/Users/camer/Documents/projects", folderExists: (p) => /tools$/i.test(p) },
+      ensureParentBranch: async () => calls.push(["ensureParentBranch"]),
+      assertCleanWorkingTree: async () => calls.push(["assertCleanWorkingTree"]),
+      readImplementationSummary: async () => "Summary details",
+      pushBranch: async ({ branchName }) => calls.push(["pushBranch", branchName]),
+      getPullRequest: async () => null,
+      createPullRequest: async ({ title, body, branchName }) => {
+        calls.push(["createPullRequest", title, branchName, body]);
+        return { number: 42, url: "https://example.com/pr/42", body, headRefName: branchName };
+      },
+      updatePullRequest: async () => calls.push(["updatePullRequest"]),
+      addParentComment: async (issueKey, body) => calls.push(["addParentComment", issueKey, body]),
+    },
+  );
+
+  assert.equal(pullRequest.url, "https://example.com/pr/42");
+  assert.deepEqual(calls.slice(0, 3), [["ensureParentBranch"], ["assertCleanWorkingTree"], ["pushBranch", "test-branch"]]);
+  assert.equal(calls.some(([type]) => type === "updatePullRequest"), false);
+  assert.match(calls.find(([type]) => type === "addParentComment")[2], /https:\/\/example.com\/pr\/42/);
+});
+
+test("reviewParentPullRequest comments when Claude review fails", async () => {
+  const calls = [];
+  const result = await reviewParentPullRequest(
     {
       parent: {
         identifier: "COA-129",
@@ -134,6 +198,8 @@ test("finalizeParentAfterReview still moves parent to review and comments when C
     ],
     {
       routing: { documentsRoot: "C:/Users/camer/Documents", projectsRoot: "C:/Users/camer/Documents/projects", folderExists: (p) => /tools$/i.test(p) },
+      ensureParentBranch: async () => calls.push(["ensureParentBranch"]),
+      assertCleanWorkingTree: async () => calls.push(["assertCleanWorkingTree"]),
       getPullRequest: async () => ({ number: 42, url: "https://example.com/pr/42", body: "Existing body", headRefName: "test-branch" }),
       readImplementationSummary: async () => "Summary details",
       updatePullRequest: async (payload) => calls.push(["updatePullRequest", payload.body]),
@@ -142,33 +208,50 @@ test("finalizeParentAfterReview still moves parent to review and comments when C
       },
       addPullRequestComment: async (payload) => calls.push(["addPullRequestComment", payload.body]),
       addParentComment: async (issueKey, body) => calls.push(["addParentComment", issueKey, body]),
-      moveParentToReview: async (issueKey, state) => calls.push(["moveParentToReview", issueKey, state]),
     },
   );
 
-  assert.equal(calls.at(-1)[0], "moveParentToReview");
+  assert.equal(result.pullRequest.url, "https://example.com/pr/42");
   assert.match(calls.find(([type]) => type === "addPullRequestComment")[1], /Review failed/);
   assert.match(calls.find(([type]) => type === "addPullRequestComment")[1], /Claude crashed/);
 });
 
-test("runWatchMode completes the next cycle after a large sleep/wake time jump", async () => {
+
+test("reviewParentPullRequest requires push before PR review", async () => {
+  await assert.rejects(
+    () =>
+      reviewParentPullRequest(
+        {
+          parent: {
+            identifier: "COA-129",
+            title: "Symphony",
+            branchName: "test-branch",
+            labels: { nodes: [{ name: "tools" }] },
+          },
+          children: [{ identifier: "COA-135", title: "Failure handling and daemon resilience", state: { name: "Done" } }],
+        },
+        [],
+        {
+          routing: { documentsRoot: "C:/Users/camer/Documents", projectsRoot: "C:/Users/camer/Documents/projects", folderExists: (p) => /tools$/i.test(p) },
+          ensureParentBranch: async () => {},
+          assertCleanWorkingTree: async () => {},
+          getPullRequest: async () => null,
+        },
+      ),
+    /run \/crosby push COA-129 first/i,
+  );
+});
+
+test("runWatchMode stays idle across later cycles when no execute parents exist", async () => {
   const cycles = [];
   const result = await runWatchMode(
     {
-      fetchReadyToBuildIssues: async () => [
-        { identifier: "COA-200", title: "Ready issue", state: { name: "Ready to Build" } },
-      ],
-      fetchExecuteIssues: async () => [],
-      moveIssue: async () => {},
-      runWorker: async () => {
-        throw new Error("should not run");
-      },
+      fetchExecuteParentQueues: async () => [],
       sleep: async () => {},
     },
     {
       maxCycles: 2,
       pollIntervalMs: 0,
-      lastSweepDateKey: "2026-05-03",
       getNow: (() => {
         const timestamps = [new Date("2026-05-04T00:02:00Z"), new Date("2026-05-04T12:45:00Z")];
         let index = 0;
@@ -179,7 +262,6 @@ test("runWatchMode completes the next cycle after a large sleep/wake time jump",
   );
 
   assert.equal(result.cycles.length, 2);
-  assert.equal(cycles[0].sweep.ran, true);
-  assert.deepEqual(cycles[0].sweep.movedIssueKeys, ["COA-200"]);
+  assert.equal(cycles[0].status, "idle");
   assert.equal(cycles[1].status, "idle");
 });

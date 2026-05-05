@@ -31,7 +31,11 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 - Read the plan, spec, or PRD
 - Identify the user stories and the minimum viable outcome
 - Resolve the originating Linear parent issue from the current feature context
-- If the parent issue cannot be resolved confidently, stop and ask the user
+- Load the parent issue metadata needed for child creation, including:
+  - parent issue key
+  - parent project
+  - parent labels
+- If the parent issue cannot be resolved confidently, or its project/labels cannot be loaded confidently, stop and ask the user
 
 ### 2) Draft slices
 - Break the work into independent vertical slices
@@ -60,12 +64,16 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 ### 6) Create Linear sub-issues after approval
 - Only after explicit user approval, create the approved issues in Linear as child issues of the originating parent issue
 - Use the Linear CLI to create each child issue under the existing parent
+- Every created child must inherit the parent context:
+  - same Linear project as the parent
+  - same labels as the parent, unless the user explicitly asked for deviations
 - Set the initial Linear state when creating each child issue:
   - `AFK` issues → `Ready to Build`
   - `HITL` issues → `Backlog`
 - Do not leave the initial state to Linear defaults when the issue type is known
 - Do not create a new parent issue
-- Report the created issue keys, URLs, and initial states back to the user
+- After creation, verify each child landed under the correct parent, project, labels, and initial state
+- Report the created issue keys, URLs, inherited project, inherited labels, and initial states back to the user
 
 ## Output Format
 
@@ -83,6 +91,8 @@ After approval and creation, also report:
 - Linear parent issue
 - Created child issue keys
 - Created child issue URLs
+- Created child inherited project
+- Created child inherited labels
 - Created child initial states
 
 ## Quality Checks
@@ -93,6 +103,8 @@ After approval and creation, also report:
 - Would the issue list support incremental delivery?
 - Are the local planning artifacts still aligned with the approved issue breakdown?
 - Has explicit user approval been captured before Linear creation?
+- Will every created child inherit the parent project and labels?
+- Was that inheritance verified after creation?
 
 ## Troubleshooting
 
@@ -122,3 +134,7 @@ After approval and creation, also report:
   - `AFK` → `Ready to Build`
   - `HITL` → `Backlog`
 - Do not leave typed execution issues in an unintended default workflow state.
+
+**Created issues did not inherit the parent labels or project**
+- Immediately correct the child issues so they match the parent project and labels.
+- If the parent metadata could not be resolved confidently, stop and ask the user before creating additional children.
