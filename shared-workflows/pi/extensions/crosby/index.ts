@@ -4,8 +4,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   fetchParentQueue,
-  finalizeParentAfterReview,
   parseCrosbyCommandArgs,
+  publishParentPullRequest,
+  reviewParentPullRequest,
   runQueueExecution,
   runWatchMode,
 } from "./lib-v2.mjs";
@@ -37,7 +38,8 @@ function getGitInvocation(args: string[]) {
   return { command: configured || "git", args };
 }
 
-const DEFAULT_CROSBY_PI_MODEL = process.env.CROSBY_PI_MODEL?.trim() || "openai/gpt-5.5";
+// Intentionally do not force a Pi worker model here.
+// Let isolated workers inherit normal Pi model resolution from the parent environment/session config.
 const DEFAULT_CROSBY_CLAUDE_MODEL = process.env.CROSBY_CLAUDE_MODEL?.trim() || "claude-sonnet-4-6";
 const DEFAULT_CROSBY_CLAUDE_EFFORT = process.env.CROSBY_CLAUDE_EFFORT?.trim() || "medium";
 
@@ -180,7 +182,12 @@ async function addIssueComment(pi: ExtensionAPI, issueKey: string, body: string)
   }
 }
 
-async function getPullRequestForBranch(pi: ExtensionAPI, branchName: string | undefined, cwd: string) {
+async function getPullRequestForBranch(
+  pi: ExtensionAPI,
+  branchName: string | undefined,
+  cwd: string,
+  options?: { allowMissing?: boolean },
+) {
   const invocation = getGhInvocation([
     "pr",
     "view",
@@ -192,6 +199,9 @@ async function getPullRequestForBranch(pi: ExtensionAPI, branchName: string | un
 
   if (result.code !== 0) {
     const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    if (options?.allowMissing && /no pull requests found for branch/i.test(details)) {
+      return null;
+    }
     throw new Error(
       details
         ? `Failed to load pull request details for branch ${branchName ?? "current"}. ${details}`
@@ -206,6 +216,35 @@ async function getPullRequestForBranch(pi: ExtensionAPI, branchName: string | un
       `Failed to parse pull request details for branch ${branchName ?? "current"}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+async function createPullRequest(pi: ExtensionAPI, title: string, body: string, branchName: string | undefined, cwd: string) {
+  const invocation = getGhInvocation([
+    "pr",
+    "create",
+    ...(branchName ? ["--head", branchName] : []),
+    "--title",
+    title,
+    "--body",
+    body,
+  ]);
+  const result = await pi.exec(invocation.command, invocation.args, { cwd });
+
+  if (result.code !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      details
+        ? `Failed to create pull request for branch ${branchName ?? "current"}. ${details}`
+        : `Failed to create pull request for branch ${branchName ?? "current"}. GitHub command: ${invocation.command}. Exit code: ${result.code}.`,
+    );
+  }
+
+  const pullRequest = await getPullRequestForBranch(pi, branchName, cwd, { allowMissing: false });
+  if (!pullRequest) {
+    throw new Error(`Pull request creation reported success but no PR was found for branch ${branchName ?? "current"}.`);
+  }
+
+  return pullRequest;
 }
 
 async function updatePullRequestBody(pi: ExtensionAPI, prNumber: number, body: string, cwd: string) {
@@ -287,6 +326,23 @@ async function hasRemoteGitBranch(pi: ExtensionAPI, cwd: string, branchName: str
 async function hasUncommittedGitChanges(pi: ExtensionAPI, cwd: string) {
   const result = await execGit(pi, ["status", "--short"], cwd);
   return result.stdout.trim().length > 0;
+}
+
+async function assertCleanWorkingTree(pi: ExtensionAPI, cwd: string, command: "push" | "review") {
+  if (!(await hasUncommittedGitChanges(pi, cwd))) return;
+
+  throw new Error(
+    `Cannot run /crosby ${command} in ${cwd} because the working tree has uncommitted changes. Recovery: commit, stash, or discard the local changes first, then rerun /crosby ${command}.`,
+  );
+}
+
+async function pushGitBranch(pi: ExtensionAPI, cwd: string, branchName?: string) {
+  const resolvedBranchName = String(branchName ?? "").trim();
+  if (!resolvedBranchName) {
+    throw new Error("Cannot push the parent branch because Linear did not provide a branch name. Recovery: set the parent branch name in Linear, then rerun /crosby push.");
+  }
+
+  await execGit(pi, ["push", "-u", "origin", resolvedBranchName], cwd);
 }
 
 async function ensureParentBranch(pi: ExtensionAPI, parentIssue: any, cwd?: string) {
@@ -399,7 +455,7 @@ async function runIsolatedWorker(pi: ExtensionAPI, prompt: string, cwd?: string)
   const invocation = getPiInvocation();
   const result = await pi.exec(
     invocation.command,
-    [...invocation.args, "--model", DEFAULT_CROSBY_PI_MODEL, "--mode", "text", "-p", "--no-session", prompt],
+    [...invocation.args, "--mode", "text", "-p", "--no-session", prompt],
     cwd ? { cwd } : undefined,
   );
 
@@ -417,7 +473,7 @@ async function runIsolatedWorker(pi: ExtensionAPI, prompt: string, cwd?: string)
 
 export default function crosbyExtension(pi: ExtensionAPI) {
   pi.registerCommand("crosby", {
-    description: "Validate a parent Linear issue or start watch mode for parent issues in Execute",
+    description: "Execute parent child-work, watch Execute parents, or explicitly push/review a parent PR",
     handler: async (args, ctx) => {
       try {
         const command = parseCrosbyCommandArgs(args);
@@ -432,16 +488,6 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
               ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
               refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
-              finalizeParentCompletion: (finalQueue, completedChildren) =>
-                finalizeParentAfterReview(finalQueue, completedChildren, {
-                  getPullRequest: ({ branchName, cwd }) => getPullRequestForBranch(pi, branchName, cwd),
-                  readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
-                  updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
-                  runClaudeReview: ({ prompt, cwd }) => runClaudeReviewWorker(pi, prompt, cwd),
-                  addPullRequestComment: ({ prNumber, body, cwd }) => addPullRequestComment(pi, prNumber, body, cwd),
-                  addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-                  moveParentToReview: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
-                }),
             },
             {
               pollIntervalMs: 60000,
@@ -468,22 +514,43 @@ export default function crosbyExtension(pi: ExtensionAPI) {
 
         const issueKey = command.issueKey;
         const queue = await fetchParentQueue(issueKey, (key) => loadIssueFromLinear(pi, key));
+
+        if (command.mode === "push") {
+          const pullRequest = await publishParentPullRequest(queue, [], {
+            ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
+            assertCleanWorkingTree: ({ cwd }) => assertCleanWorkingTree(pi, cwd, "push"),
+            readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
+            pushBranch: ({ branchName, cwd }) => pushGitBranch(pi, cwd, branchName),
+            getPullRequest: ({ branchName, cwd, allowMissing }) => getPullRequestForBranch(pi, branchName, cwd, { allowMissing }),
+            createPullRequest: ({ title, body, branchName, cwd }) => createPullRequest(pi, title, body, branchName, cwd),
+            updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
+            addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
+          });
+          ctx.ui.notify(`Pushed ${queue.parent.identifier} and synced PR ${pullRequest?.url ?? ""}.`, "success");
+          return;
+        }
+
+        if (command.mode === "review") {
+          const review = await reviewParentPullRequest(queue, [], {
+            ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
+            assertCleanWorkingTree: ({ cwd }) => assertCleanWorkingTree(pi, cwd, "review"),
+            getPullRequest: ({ branchName, cwd, allowMissing }) => getPullRequestForBranch(pi, branchName, cwd, { allowMissing }),
+            readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
+            updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
+            runClaudeReview: ({ prompt, cwd }) => runClaudeReviewWorker(pi, prompt, cwd),
+            addPullRequestComment: ({ prNumber, body, cwd }) => addPullRequestComment(pi, prNumber, body, cwd),
+            addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
+          });
+          ctx.ui.notify(`Reviewed ${queue.parent.identifier}. PR: ${review.pullRequest?.url ?? "unknown"}.`, "success");
+          return;
+        }
+
         const execution = await runQueueExecution(queue, {
           moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
           addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
           runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
           ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
           refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
-          finalizeParentCompletion: (finalQueue, completedChildren) =>
-            finalizeParentAfterReview(finalQueue, completedChildren, {
-              getPullRequest: ({ branchName, cwd }) => getPullRequestForBranch(pi, branchName, cwd),
-              readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
-              updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
-              runClaudeReview: ({ prompt, cwd }) => runClaudeReviewWorker(pi, prompt, cwd),
-              addPullRequestComment: ({ prNumber, body, cwd }) => addPullRequestComment(pi, prNumber, body, cwd),
-              addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-              moveParentToReview: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
-            }),
         });
 
         pi.appendEntry("crosby-queue-loaded", {

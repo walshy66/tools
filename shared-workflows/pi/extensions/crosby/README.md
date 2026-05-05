@@ -10,15 +10,15 @@ Crosby is the Linear execution orchestrator for this workflow.
 /crosby COA-129
 ```
 
-Use this when you want to kick off the next runnable child under one parent immediately.
+Use this to kick off the next runnable child under one parent immediately.
 
-### Run the overnight/background watcher
+### Run the watcher
 
 ```text
 /crosby --watch
 ```
 
-Use this when you want Crosby to poll for parent issues in `Execute` and work eligible child issues automatically.
+Use this to poll for parent issues in `Execute` and process eligible child issues automatically.
 
 ### Stop the watcher
 
@@ -32,31 +32,30 @@ Use this when you want Crosby to poll for parent issues in `Execute` and work el
 - child in `Ready to Build` = runnable work
 - one parent issue = one feature branch
 
+## What Crosby does
 
-## What it does
+Crosby supports four commands:
 
-Crosby supports two modes:
-
-- **Manual mode**: run one parent now
-- **Watch mode**: poll Linear and automatically process active parents
+- **`/crosby COA-129`**: run one parent now
+- **`/crosby --watch`**: poll Linear and automatically process active parents
+- **`/crosby push COA-129`**: push the parent branch and create/update a PR
+- **`/crosby review COA-129`**: run automated review against the parent PR
 
 It uses:
 
 - **Pi build worker** for child implementation
-  - default model: `openai/gpt-5.5`
-- **Claude review worker** for final parent review
+  - model is inherited from normal Pi resolution/config
+- **Claude review worker** for explicit PR review
   - default model: `claude-sonnet-4-6`
   - default effort: `medium`
 
 ## Commands
 
-### Manual run
+### Execute child work
 
 ```text
 /crosby COA-129
 ```
-
-Use this when you want to manually trigger execution for a single parent issue.
 
 What happens:
 
@@ -72,15 +71,13 @@ What happens:
    - `Done` if complete
    - `In Review` if human review/action is needed
 8. Posts a progress comment to the parent
-9. If all children are `Done`, Crosby finalizes the parent and moves it to `In Review`
+9. If all children are `Done`, Crosby posts the final parent summary and moves the parent to `In Review`
 
 ### Watch mode
 
 ```text
 /crosby --watch
 ```
-
-Use this when you want Crosby to keep polling in the background.
 
 Current behavior:
 
@@ -92,7 +89,7 @@ Current behavior:
 - moves that child to `Build`
 - runs the Pi worker
 - posts progress back to the parent
-- finalizes the parent when all child issues are complete
+- when all child issues are complete, posts the final summary and moves the parent to `In Review`
 
 ## How to stop watch mode
 
@@ -117,7 +114,7 @@ If watch mode is off, nothing runs automatically.
   - active
   - watcher will inspect this parent and try to run child work
 - `In Review`
-  - all child work is complete and parent has been finalized
+  - all child work is complete and ready for human QA / explicit push / explicit review
 - `Done`
   - fully finished
 
@@ -180,29 +177,52 @@ If watch mode is off, nothing runs automatically.
 - Blocked children are skipped until blockers are `Done`
 - If a child is already in `Build`, Crosby will not start another child for that parent
 
-## Review/finalization behavior
+## Push/review behavior
 
-When all child issues are `Done`, Crosby:
+When all child issues are `Done`, normal execution stops after:
 
-1. reads `implementation_summary.md`
-2. loads the GitHub PR
-3. updates the PR description
-4. runs Claude review
-5. posts the review result to the PR
-6. posts the final summary to the parent Linear issue
-7. moves the parent to `In Review`
+1. posting the final summary to the parent Linear issue
+2. moving the parent to `In Review`
+
+GitHub work is explicit:
+
+### Push
+
+```text
+/crosby push COA-129
+```
+
+1. ensures the repo is on the parent branch
+2. requires a clean working tree
+3. pushes the branch to `origin`
+4. creates a PR if missing, otherwise updates the existing PR body
+5. posts the PR link back to the parent Linear issue
+
+### Review
+
+```text
+/crosby review COA-129
+```
+
+1. ensures the repo is on the parent branch
+2. requires a clean working tree
+3. requires an existing PR
+4. syncs `implementation_summary.md` into the PR body
+5. runs Claude review
+6. posts the review result to the PR
+7. posts the review summary back to the parent Linear issue
 
 ## Config overrides
 
 Optional environment variables:
 
-- `CROSBY_PI_MODEL`
 - `CROSBY_CLAUDE_MODEL`
 - `CROSBY_CLAUDE_EFFORT`
 
+Pi build workers now inherit model selection from normal Pi config/session resolution.
+
 Defaults:
 
-- `CROSBY_PI_MODEL=openai/gpt-5.5`
 - `CROSBY_CLAUDE_MODEL=claude-sonnet-4-6`
 - `CROSBY_CLAUDE_EFFORT=medium`
 

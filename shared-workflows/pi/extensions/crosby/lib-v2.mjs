@@ -33,16 +33,20 @@ export function parseCrosbyCommandArgs(args) {
     throw new Error("/crosby --watch does not accept an issue key. Recovery: run /crosby --watch by itself.");
   }
 
+  if (tokens.length === 2 && ["push", "review"].includes(tokens[0].toLowerCase())) {
+    return { mode: tokens[0].toLowerCase(), issueKey: tokens[1] };
+  }
+
   if (tokens.length === 1) {
     return { mode: "parent", issueKey: tokens[0] };
   }
 
   if (tokens.length === 0) {
-    throw new Error("Usage: /crosby <PARENT-ISSUE-KEY> | /crosby --watch");
+    throw new Error("Usage: /crosby <PARENT-ISSUE-KEY> | /crosby --watch | /crosby push <PARENT-ISSUE-KEY> | /crosby review <PARENT-ISSUE-KEY>");
   }
 
   throw new Error(
-    "/crosby accepts exactly one parent issue key or the --watch flag. Recovery: rerun /crosby COA-116 or /crosby --watch.",
+    "/crosby accepts exactly one parent issue key, the --watch flag, or 'push/review <PARENT-ISSUE-KEY>'. Recovery: rerun /crosby COA-116, /crosby --watch, /crosby push COA-116, or /crosby review COA-116.",
   );
 }
 
@@ -521,16 +525,119 @@ function parseClaudeReviewWorkerResult(workerResult) {
   return parsed;
 }
 
-export async function finalizeParentAfterReview(queue, completedChildren, operations) {
-  if (!areAllChildrenDone(queue?.children)) return;
+function getQueueRoutingTarget(queue) {
+  return queue?.parent?.labels ? queue.parent : (queue?.children ?? []).find((child) => child?.labels) ?? queue?.parent;
+}
 
-  const routingTarget = queue?.parent?.labels ? queue.parent : (queue?.children ?? []).find((child) => child?.labels) ?? queue?.parent;
-  const routing = resolveIssueWorkingDirectory(routingTarget, operations.routing);
-  const pullRequest = await operations.getPullRequest({
+function resolveQueueWorkingDirectory(queue, routingOptions) {
+  return resolveIssueWorkingDirectory(getQueueRoutingTarget(queue), routingOptions);
+}
+
+function assertChildrenDoneForParentAction(queue, actionLabel) {
+  if (areAllChildrenDone(queue?.children)) return;
+
+  throw new Error(
+    `Cannot ${actionLabel} for ${queue?.parent?.identifier ?? "the parent issue"} until all child issues are Done. Recovery: finish or explicitly resolve the remaining child issues first, then rerun /crosby ${actionLabel} ${queue?.parent?.identifier ?? "PARENT-ISSUE-KEY"}.`,
+  );
+}
+
+export async function publishParentPullRequest(queue, completedChildren, operations) {
+  assertChildrenDoneForParentAction(queue, "push");
+
+  const routing = resolveQueueWorkingDirectory(queue, operations.routing);
+  if (typeof operations.ensureParentBranch === "function") {
+    await operations.ensureParentBranch({
+      parent: queue.parent,
+      cwd: routing.cwd,
+    });
+  }
+
+  if (typeof operations.assertCleanWorkingTree === "function") {
+    await operations.assertCleanWorkingTree({
+      parent: queue.parent,
+      cwd: routing.cwd,
+      command: "push",
+    });
+  }
+
+  const implementationSummary = await operations.readImplementationSummary({
+    parent: queue.parent,
+    cwd: routing.cwd,
+  });
+
+  await operations.pushBranch({
     parent: queue.parent,
     branchName: queue?.parent?.branchName,
     cwd: routing.cwd,
   });
+
+  let pullRequest = await operations.getPullRequest({
+    parent: queue.parent,
+    branchName: queue?.parent?.branchName,
+    cwd: routing.cwd,
+    allowMissing: true,
+  });
+
+  const nextBody = mergeImplementationSummaryIntoPrBody(pullRequest?.body ?? "", implementationSummary);
+
+  if (pullRequest) {
+    await operations.updatePullRequest({
+      parent: queue.parent,
+      pullRequest,
+      prNumber: pullRequest.number,
+      body: nextBody,
+      cwd: routing.cwd,
+    });
+  } else {
+    pullRequest = await operations.createPullRequest({
+      parent: queue.parent,
+      title: `${queue.parent.identifier}: ${queue.parent.title}`,
+      body: nextBody,
+      branchName: queue?.parent?.branchName,
+      cwd: routing.cwd,
+    });
+  }
+
+  await operations.addParentComment(
+    queue.parent.identifier,
+    `${buildFinalParentSummary(queue, completedChildren)}\n\nGitHub publish:\n- Branch: ${queue?.parent?.branchName ?? "unknown"}\n- PR: ${pullRequest?.url ?? "unknown"}`,
+  );
+
+  return pullRequest;
+}
+
+export async function reviewParentPullRequest(queue, completedChildren, operations) {
+  assertChildrenDoneForParentAction(queue, "review");
+
+  const routing = resolveQueueWorkingDirectory(queue, operations.routing);
+  if (typeof operations.ensureParentBranch === "function") {
+    await operations.ensureParentBranch({
+      parent: queue.parent,
+      cwd: routing.cwd,
+    });
+  }
+
+  if (typeof operations.assertCleanWorkingTree === "function") {
+    await operations.assertCleanWorkingTree({
+      parent: queue.parent,
+      cwd: routing.cwd,
+      command: "review",
+    });
+  }
+
+  const pullRequest = await operations.getPullRequest({
+    parent: queue.parent,
+    branchName: queue?.parent?.branchName,
+    cwd: routing.cwd,
+    allowMissing: true,
+  });
+
+  if (!pullRequest) {
+    throw new Error(
+      `No pull request exists yet for branch ${queue?.parent?.branchName ?? "unknown"}. Recovery: run /crosby push ${queue?.parent?.identifier ?? "PARENT-ISSUE-KEY"} first, then rerun /crosby review ${queue?.parent?.identifier ?? "PARENT-ISSUE-KEY"}.`,
+    );
+  }
+
   const implementationSummary = await operations.readImplementationSummary({
     parent: queue.parent,
     cwd: routing.cwd,
@@ -583,7 +690,16 @@ export async function finalizeParentAfterReview(queue, completedChildren, operat
     queue.parent.identifier,
     buildFinalParentSummaryWithReview(queue, completedChildren, pullRequest, reviewResult),
   );
-  await operations.moveParentToReview(queue.parent.identifier, "Review");
+
+  return { pullRequest, reviewResult };
+}
+
+export async function finalizeParentAfterReview(queue, completedChildren, operations) {
+  const pullRequest = await publishParentPullRequest(queue, completedChildren, operations);
+  return reviewParentPullRequest(queue, completedChildren, {
+    ...operations,
+    getPullRequest: async () => pullRequest,
+  });
 }
 
 async function reportChildOutcomeToParent(queue, execution, addComment) {
