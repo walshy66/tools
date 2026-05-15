@@ -1,6 +1,6 @@
 # tools
 
-**Version:** `1.0.6`
+**Version:** `1.0.7`
 
 Shared workflow and agent assets for multiple tools.
 
@@ -64,6 +64,7 @@ The current portable set includes:
 - `to-prd`
 - `to-issues`
 - `grill-me`
+- `grill-with-docs`
 - `git-guardrails-claude-code`
 - `analyze`
 - `clarify`

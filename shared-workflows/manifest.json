@@ -1,6 +1,6 @@
 {
   "name": "shared-workflows",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "sourceRepo": "https://github.com/walshy66/tools",
   "description": "Canonical shared workflows for Pi, Claude Code, and Codex.",
   "portable": {
@@ -9,6 +9,7 @@
       "to-prd": "shared-workflows/portable/skills/to-prd/SKILL.md",
       "to-issues": "shared-workflows/portable/skills/to-issues/SKILL.md",
       "grill-me": "shared-workflows/portable/skills/grill-me/SKILL.md",
+      "grill-with-docs": "shared-workflows/portable/skills/grill-with-docs/SKILL.md",
       "git-guardrails-claude-code": "shared-workflows/portable/skills/git-guardrails-claude-code/SKILL.md",
       "analyze": "shared-workflows/portable/skills/analyze/SKILL.md",
       "clarify": "shared-workflows/portable/skills/clarify/SKILL.md",
