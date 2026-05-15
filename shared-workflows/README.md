@@ -12,6 +12,7 @@ Canonical shared content for tools and agents.
 - `to-prd`
 - `to-issues`
 - `grill-me`
+- `grill-with-docs`
 - `git-guardrails-claude-code`
 - `analyze`
 - `clarify`
