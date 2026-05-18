@@ -29,7 +29,8 @@ Interview the user relentlessly about a plan or design until shared understandin
 ### 0) Load issue context when provided
 - If the user includes a Linear issue key such as `COA-96`, fetch the issue before asking any questions.
 - Prefer the Linear CLI, e.g. `linear issue view COA-96`.
-- Only use another integration if the CLI is unavailable in the current agent.
+- If that fails, inspect the workspace for a local Linear wrapper/extension and use it if available.
+- Only use another integration if no local Linear access exists in the current agent.
 - Read the issue title and description carefully.
 - Treat the Linear issue description as the starting brief for the grilling session.
 - If the issue cannot be fetched, tell the user and ask whether to continue from their prompt alone.
