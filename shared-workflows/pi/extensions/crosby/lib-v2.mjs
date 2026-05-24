@@ -151,7 +151,8 @@ function getNonRunnableReason(child) {
 
   if (stateName === "done") return "done";
   if (stateName === "review" || stateName === "in review") return "review";
-  if (stateName === "building" || stateName === "build" || stateName === "execute") return "building";
+  if (stateName === "building" || stateName === "build") return null;
+  if (stateName === "execute") return "building";
   if (stateName.includes("ready") && stateName.includes("build")) return null;
 
   if (stateType === "unstarted" || stateType === "backlog") return null;
@@ -183,7 +184,7 @@ function buildConcurrentSupervisorError(queue, buildingChildren = getBuildingChi
 
 function assertNoConcurrentSupervisor(queue) {
   const buildingChildren = getBuildingChildren(queue?.children);
-  if (buildingChildren.length > 0) {
+  if (buildingChildren.length > 1) {
     throw buildConcurrentSupervisorError(queue, buildingChildren);
   }
 }
@@ -268,6 +269,31 @@ export function selectNextExecuteIssue(issues) {
 export function buildRalphLoopPrompt(child) {
   const issueKey = child?.identifier ?? "UNKNOWN-ISSUE";
   const serializedChild = JSON.stringify(child, null, 2);
+  const hasChildren = Array.isArray(child?.children) && child.children.length > 0;
+
+  if (hasChildren) {
+    return [
+      `Continue Crosby execution for container issue ${issueKey}.`,
+      "",
+      "Execution notes:",
+      `- Linear CLI is available and authenticated in this environment for ${issueKey}.`,
+      `- Do not claim you cannot access Linear unless running 'linear issue view ${issueKey} --json' actually fails in this worker.`,
+      `- First refresh the issue with 'linear issue view ${issueKey} --json'.`,
+      "- Crosby may already have moved this container issue to Build/Building before launching this worker; that state is valid and means this is an explicit resume/continuation, not a fresh ralph-loop start.",
+      "- This issue has child issues, so treat it as a container/parent queue instead of invoking the ralph-loop hard guard on the container itself.",
+      "- Execute the next unblocked child issue under this container that is in Ready to Build, using the same TDD discipline as ralph-loop for that leaf issue.",
+      "- If a nested child also has children, descend to its next unblocked Ready to Build child until you reach an executable leaf issue.",
+      "- Move the executable leaf issue through Build/Building to Done when complete, or In Review if human action is required.",
+      `- When all direct children of ${issueKey} are Done, return outcome done for ${issueKey}. If runnable children remain, continue within this worker until the ${issueKey} child queue is exhausted or human action is required.`,
+      "- A preloaded issue snapshot is included below so you have immediate context even before refreshing.",
+      "",
+      "Preloaded issue snapshot:",
+      serializedChild,
+      "",
+      "Return JSON only with this schema for the container issue:",
+      '{"issueKey":"ISSUE-KEY","issueTitle":"Issue title","outcome":"done|review|fatal","summary":"Concise summary","changes":["key change"],"tests":["test or verification run"],"requiredHumanAction":"Required for review/fatal outcomes","recoveryNotes":["Required for review/fatal outcomes"]}',
+    ].join("\n");
+  }
 
   return [
     `/skill:ralph-loop ${issueKey}`,
@@ -276,6 +302,7 @@ export function buildRalphLoopPrompt(child) {
     `- Linear CLI is available and authenticated in this environment for ${issueKey}.`,
     `- Do not claim you cannot access Linear unless running 'linear issue view ${issueKey} --json' actually fails in this worker.`,
     `- First refresh the issue with 'linear issue view ${issueKey} --json', then proceed with the skill flow.`,
+    "- If Crosby already moved this issue to Build/Building before launching this worker, treat that as an explicit resume and proceed; do not fail solely because the current state is Build/Building.",
     "- A preloaded issue snapshot is included below so you have immediate context even before refreshing.",
     "",
     "Preloaded issue snapshot:",
