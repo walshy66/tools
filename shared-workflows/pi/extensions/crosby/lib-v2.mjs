@@ -154,13 +154,14 @@ function getNonRunnableReason(child) {
   if (stateName === "building" || stateName === "build") return null;
   if (stateName === "execute") return "building";
   if (stateName.includes("ready") && stateName.includes("build")) return null;
+  if (stateName === "backlog") return "not-ready";
 
-  if (stateType === "unstarted" || stateType === "backlog") return null;
+  if (stateType === "unstarted" || stateType === "backlog") return "not-ready";
   if (stateType === "started") return "building";
   if (stateType === "completed") return "done";
   if (stateType === "canceled") return "done";
 
-  return null;
+  return "not-ready";
 }
 
 function getBuildingChildren(children) {
@@ -269,9 +270,9 @@ export function selectNextExecuteIssue(issues) {
 export function buildRalphLoopPrompt(child) {
   const issueKey = child?.identifier ?? "UNKNOWN-ISSUE";
   const serializedChild = JSON.stringify(child, null, 2);
-  const hasChildren = Array.isArray(child?.children) && child.children.length > 0;
+  const mayBeContainer = Array.isArray(child?.children) && child.children.length > 0;
 
-  if (hasChildren) {
+  if (mayBeContainer) {
     return [
       `Continue Crosby execution for container issue ${issueKey}.`,
       "",
@@ -296,12 +297,15 @@ export function buildRalphLoopPrompt(child) {
   }
 
   return [
-    `/skill:ralph-loop ${issueKey}`,
+    `Continue Crosby execution for issue ${issueKey}.`,
     "",
     "Execution notes:",
     `- Linear CLI is available and authenticated in this environment for ${issueKey}.`,
     `- Do not claim you cannot access Linear unless running 'linear issue view ${issueKey} --json' actually fails in this worker.`,
-    `- First refresh the issue with 'linear issue view ${issueKey} --json', then proceed with the skill flow.`,
+    `- First refresh the issue with 'linear issue view ${issueKey} --json'.`,
+    "- The parent queue snapshot may be shallow and omit this issue's children, so do not assume this is a leaf issue from the preloaded snapshot alone.",
+    "- If the refreshed issue has child issues, treat it as a container/parent queue: Build/Building is a valid resume state, find its next unblocked Ready to Build child, and continue through its child queue until exhausted or human action is required.",
+    "- Only if the refreshed issue has no children, execute it as a leaf issue using ralph-loop/TDD discipline.",
     "- If Crosby already moved this issue to Build/Building before launching this worker, treat that as an explicit resume and proceed; do not fail solely because the current state is Build/Building.",
     "- A preloaded issue snapshot is included below so you have immediate context even before refreshing.",
     "",
@@ -851,6 +855,44 @@ export function selectNextRunnableChild(queue) {
   };
 }
 
+async function resolveExecutableIssuePath(queue, operations, ancestors = []) {
+  const classification = classifyChildIssues(queue?.children ?? []);
+
+  for (const candidate of classification.runnable) {
+    const fullIssue = typeof operations.loadIssue === "function" ? await operations.loadIssue(candidate.identifier) : candidate;
+    const executable = fullIssue ?? candidate;
+    const path = [...ancestors, executable];
+    const children = Array.isArray(executable?.children) ? executable.children : [];
+
+    if (children.length === 0) {
+      return { child: executable, classification, path };
+    }
+
+    try {
+      return await resolveExecutableIssuePath({ parent: executable, children }, operations, path);
+    } catch (error) {
+      if (!String(error instanceof Error ? error.message : error).includes("found no runnable executable leaf")) {
+        throw error;
+      }
+    }
+  }
+
+  const remainingByReason = summarizeRemainingChildren(classification);
+  const suffix = Object.keys(remainingByReason).length ? ` Remaining children: ${JSON.stringify(remainingByReason)}.` : "";
+  throw new Error(
+    `/crosby found no runnable executable leaf under ${queue?.parent?.identifier ?? "the supplied parent"}.${suffix}`,
+  );
+}
+
+async function finalizeCompletedContainers(path, operations) {
+  for (let index = path.length - 2; index >= 0; index -= 1) {
+    const container = typeof operations.loadIssue === "function" ? await operations.loadIssue(path[index].identifier) : path[index];
+    if (areAllChildrenDone(container?.children)) {
+      await operations.moveIssue(container.identifier, "Done");
+    }
+  }
+}
+
 function getExecutionRoutingTarget(queue, child) {
   if (getIssueLabelNames(child).length > 0) return child;
   if (getIssueLabelNames(queue?.parent).length > 0) return queue.parent;
@@ -858,32 +900,45 @@ function getExecutionRoutingTarget(queue, child) {
 }
 
 export async function runSingleChildExecution(queue, operations) {
-  const { child, classification } = selectNextRunnableChild(queue);
-  const routingTarget = getExecutionRoutingTarget(queue, child);
+  const { child, classification, path } = await resolveExecutableIssuePath(queue, operations);
+  const topLevelChild = path[0] ?? child;
+  const routingTarget = getExecutionRoutingTarget(queue, topLevelChild);
   const routing = routingTarget ? resolveIssueWorkingDirectory(routingTarget, operations.routing) : null;
 
   if (typeof operations.ensureParentBranch === "function") {
     await operations.ensureParentBranch({
       parent: queue.parent,
-      child,
+      child: topLevelChild,
       cwd: routing?.cwd,
     });
   }
 
-  try {
-    await operations.moveIssue(child.identifier, "Building");
-  } catch (error) {
-    if (typeof operations.refreshQueue === "function") {
-      const refreshedQueue = await operations.refreshQueue(queue.parent.identifier);
-      const refreshedChild = (refreshedQueue?.children ?? []).find((entry) => entry?.identifier === child.identifier);
-      if (refreshedChild?.state?.name === "Building") {
-        throw buildConcurrentSupervisorError(refreshedQueue);
+  for (const issue of path) {
+    try {
+      await operations.moveIssue(issue.identifier, "Building");
+    } catch (error) {
+      if (typeof operations.refreshQueue === "function") {
+        const refreshedQueue = await operations.refreshQueue(queue.parent.identifier);
+        const refreshedChild = (refreshedQueue?.children ?? []).find((entry) => entry?.identifier === issue.identifier);
+        if (refreshedChild?.state?.name === "Building") {
+          throw buildConcurrentSupervisorError(refreshedQueue);
+        }
       }
-    }
 
-    throw new Error(
-      `Failed to move child issue ${child.identifier} to Building. Recovery: inspect the child state in Linear, then rerun /crosby ${queue.parent.identifier}. ${error instanceof Error ? error.message : String(error)}`,
-    );
+      throw new Error(
+        `Failed to move issue ${issue.identifier} to Building. Recovery: inspect the issue state in Linear, then rerun /crosby ${queue.parent.identifier}. ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  if (typeof operations.onExecutionStart === "function") {
+    await operations.onExecutionStart({
+      parent: queue.parent,
+      child,
+      topLevelChild,
+      path,
+      cwd: routing?.cwd,
+    });
   }
 
   const movedParentToBuilding = !["Building", "Build", "Execute"].includes(queue?.parent?.state?.name);
@@ -906,8 +961,21 @@ export async function runSingleChildExecution(queue, operations) {
   });
   const workerResult = parseStructuredWorkerResult(rawWorkerResult, child);
 
+  if (typeof operations.onExecutionFinish === "function") {
+    await operations.onExecutionFinish({
+      parent: queue.parent,
+      child,
+      topLevelChild,
+      path,
+      cwd: routing?.cwd,
+      rawWorkerResult,
+      workerResult,
+    });
+  }
+
   if (workerResult.outcome === "done") {
     await operations.moveIssue(child.identifier, "Done");
+    await finalizeCompletedContainers(path, operations);
   }
 
   if (workerResult.outcome === "review") {
@@ -916,6 +984,8 @@ export async function runSingleChildExecution(queue, operations) {
 
   return {
     child,
+    topLevelChild,
+    path,
     classification,
     movedParentToBuilding,
     workerPrompt,
@@ -945,6 +1015,9 @@ export async function runQueueExecution(initialQueue, operations) {
       moveIssue: operations.moveIssue,
       runWorker: operations.runWorker,
       refreshQueue: operations.refreshQueue,
+      loadIssue: operations.loadIssue,
+      onExecutionStart: operations.onExecutionStart,
+      onExecutionFinish: operations.onExecutionFinish,
       ensureParentBranch: operations.ensureParentBranch,
       routing: operations.routing,
     });
@@ -1022,6 +1095,9 @@ export async function runWatchCycle(operations) {
       moveIssue: operations.moveIssue,
       runWorker: operations.runWorker,
       refreshQueue: operations.refreshQueue,
+      loadIssue: operations.loadIssue,
+      onExecutionStart: operations.onExecutionStart,
+      onExecutionFinish: operations.onExecutionFinish,
       ensureParentBranch: operations.ensureParentBranch,
       routing: operations.routing,
     });
