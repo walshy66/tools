@@ -451,6 +451,28 @@ function getPiInvocation() {
   return { command: "pi", args: [] };
 }
 
+function formatIssuePath(path: any[] | undefined) {
+  return (Array.isArray(path) ? path : [])
+    .map((issue) => issue?.identifier)
+    .filter(Boolean)
+    .join(" > ");
+}
+
+function appendWorkerTranscript(pi: ExtensionAPI, event: any) {
+  const pathText = formatIssuePath(event.path);
+  pi.appendEntry("crosby-worker-transcript", {
+    parentIssueKey: event.parent?.identifier ?? null,
+    topLevelIssueKey: event.topLevelChild?.identifier ?? null,
+    issueKey: event.child?.identifier ?? null,
+    issuePath: pathText,
+    outcome: event.workerResult?.outcome ?? null,
+    recoveryNotes: event.workerResult?.recoveryNotes ?? [],
+    cwd: event.cwd ?? null,
+    stdout: event.rawWorkerResult?.stdout ?? "",
+    stderr: event.rawWorkerResult?.stderr ?? "",
+  });
+}
+
 async function runIsolatedWorker(pi: ExtensionAPI, prompt: string, cwd?: string) {
   const invocation = getPiInvocation();
   const result = await pi.exec(
@@ -488,6 +510,23 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
               ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
               refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
+              loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
+              onExecutionStart: (event) => {
+                const pathText = formatIssuePath(event.path);
+                ctx.ui.notify(`Crosby starting ${event.child?.identifier ?? "issue"}${pathText ? ` (${pathText})` : ""}.`, "success");
+                pi.appendEntry("crosby-worker-started", {
+                  parentIssueKey: event.parent?.identifier ?? null,
+                  topLevelIssueKey: event.topLevelChild?.identifier ?? null,
+                  issueKey: event.child?.identifier ?? null,
+                  issuePath: pathText,
+                  cwd: event.cwd ?? null,
+                });
+              },
+              onExecutionFinish: (event) => {
+                const pathText = formatIssuePath(event.path);
+                ctx.ui.notify(`Crosby finished ${event.child?.identifier ?? "issue"}: ${event.workerResult?.outcome ?? "unknown"}.`, event.workerResult?.outcome === "fatal" ? "error" : "success");
+                appendWorkerTranscript(pi, event);
+              },
             },
             {
               pollIntervalMs: 60000,
@@ -551,6 +590,23 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
           ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
           refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
+          loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
+          onExecutionStart: (event) => {
+            const pathText = formatIssuePath(event.path);
+            ctx.ui.notify(`Crosby starting ${event.child?.identifier ?? "issue"}${pathText ? ` (${pathText})` : ""}.`, "success");
+            pi.appendEntry("crosby-worker-started", {
+              parentIssueKey: event.parent?.identifier ?? null,
+              topLevelIssueKey: event.topLevelChild?.identifier ?? null,
+              issueKey: event.child?.identifier ?? null,
+              issuePath: pathText,
+              cwd: event.cwd ?? null,
+            });
+          },
+          onExecutionFinish: (event) => {
+            const pathText = formatIssuePath(event.path);
+            ctx.ui.notify(`Crosby finished ${event.child?.identifier ?? "issue"}: ${event.workerResult?.outcome ?? "unknown"}.`, event.workerResult?.outcome === "fatal" ? "error" : "success");
+            appendWorkerTranscript(pi, event);
+          },
         });
 
         pi.appendEntry("crosby-queue-loaded", {
