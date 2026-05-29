@@ -35,6 +35,7 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
   - parent issue key
   - parent project
   - parent labels
+- Prefer raw Linear API verification for labels when the CLI `issue view` output is incomplete or suspect; do not assume the parent has no labels unless verified
 - If the parent issue cannot be resolved confidently, or its project/labels cannot be loaded confidently, stop and ask the user
 
 ### 2) Draft slices
@@ -67,13 +68,21 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 - Every created child must inherit the parent context:
   - same Linear project as the parent
   - same labels as the parent, unless the user explicitly asked for deviations
+- Add the execution-type label to each child in addition to inherited labels:
+  - `AFK` issues → add `AFK` label
+  - `HITL` issues → add `HITL` label
+- Label handling must be additive, not replacing:
+  - Preserve all existing/inherited parent labels
+  - Add `AFK`/`HITL` as an extra label
+  - If the Linear CLI `--label`/`issue update --label` behavior is ambiguous or may replace labels, create the issue first and then use `linear issue label add <issue> <label>` for each missing inherited/type label
 - Set the initial Linear state when creating each child issue:
   - `AFK` issues → `Ready to Build`
   - `HITL` issues → `Backlog`
 - Do not leave the initial state to Linear defaults when the issue type is known
 - Do not create a new parent issue
-- After creation, verify each child landed under the correct parent, project, labels, and initial state
-- Report the created issue keys, URLs, inherited project, inherited labels, and initial states back to the user
+- After creation, verify each child landed under the correct parent, project, labels, type label, and initial state
+- If verification shows any inherited labels were missed or replaced, immediately re-add the missing labels; never remove existing labels unless the user explicitly requested removal
+- Report the created issue keys, URLs, inherited project, inherited labels, type labels, and initial states back to the user
 
 ## Output Format
 
@@ -93,6 +102,7 @@ After approval and creation, also report:
 - Created child issue URLs
 - Created child inherited project
 - Created child inherited labels
+- Created child type labels (`AFK` or `HITL`)
 - Created child initial states
 
 ## Quality Checks
@@ -104,7 +114,8 @@ After approval and creation, also report:
 - Are the local planning artifacts still aligned with the approved issue breakdown?
 - Has explicit user approval been captured before Linear creation?
 - Will every created child inherit the parent project and labels?
-- Was that inheritance verified after creation?
+- Will every created child receive the correct additive `AFK` or `HITL` label without replacing inherited labels?
+- Was that inheritance and type-label assignment verified after creation?
 
 ## Troubleshooting
 
@@ -137,4 +148,12 @@ After approval and creation, also report:
 
 **Created issues did not inherit the parent labels or project**
 - Immediately correct the child issues so they match the parent project and labels.
+- Use additive label commands such as `linear issue label add <issue> <label>` so existing labels are preserved.
 - If the parent metadata could not be resolved confidently, stop and ask the user before creating additional children.
+
+**Adding AFK/HITL labels removed existing labels**
+- Treat this as an error.
+- Re-fetch the parent labels using Linear API if needed.
+- Re-add all missing inherited labels to the affected children.
+- Keep the new `AFK`/`HITL` label as well.
+- Do not use any label command that replaces the full label set unless explicitly asked by the user.
