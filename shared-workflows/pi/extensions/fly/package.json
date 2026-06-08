@@ -1,0 +1,12 @@
+{
+  "name": "pi-flyctl",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.63.2",
+    "@sinclair/typebox": "^0.34.41"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

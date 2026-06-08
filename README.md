@@ -1,6 +1,6 @@
 # tools
 
-**Version:** `1.0.7`
+**Version:** `1.0.8`
 
 Shared workflow and agent assets for multiple tools.
 
@@ -10,7 +10,9 @@ Shared workflow and agent assets for multiple tools.
 - Local duplicate skill/agent copies have been removed from Pi and Claude Code.
 - Pi is configured to load shared skills directly from `shared-workflows/portable/skills`.
 - Pi, Claude Code, and Codex point to the shared manifest through their local `AGENTS.md` files.
-- `pi/extensions/` remains for Pi-specific runtime extensions and adapters.
+- Pi runtime extensions live under `shared-workflows/pi/extensions/`.
+- `shared-workflows/pi/extensions/fly/` wraps `flyctl` for Fly.io operations and slash commands.
+- Pi must be pointed at `shared-workflows/pi/extensions/` (or the folder must be copied/symlinked into `.pi/extensions/`) for runtime loading.
 - Codex currently keeps only runtime-specific assets outside the shared portable workflow set.
 - The constitution is stored canonically at `shared-workflows/references/constitution.md`.
 - Projects should use a root-level `constitution.md` symlink to that canonical file when possible.
@@ -29,6 +31,35 @@ shared-workflows/
 └── pi/
     └── extensions/
 ```
+
+## New user setup for Pi
+
+If a new user clones this repo and wants the shared Pi extensions to work locally, do this:
+
+1. Clone the repo.
+2. Install `flyctl` and sign in if you need Fly tools.
+3. Install extension dependencies:
+
+```bash
+cd shared-workflows/pi/extensions/fly
+npm ci
+```
+
+4. Tell Pi where to load extensions from using one of these options:
+   - add `C:/Users/<you>/Documents/projects/tools/shared-workflows/pi/extensions` to `~/.pi/agent/settings.json` under `extensions`
+   - or copy/symlink the extension into the project's `.pi/extensions/` folder
+
+Example `settings.json` entry:
+
+```json
+{
+  "extensions": [
+    "C:/Users/<you>/Documents/projects/tools/shared-workflows/pi/extensions"
+  ]
+}
+```
+
+After that, restart Pi and the extension commands should be available.
 
 ## Purpose
 
