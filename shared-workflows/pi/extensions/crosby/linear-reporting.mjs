@@ -37,6 +37,23 @@ export function buildParentIntegrationComment({ child, outcome, requiredHumanAct
   return `${link} requires human action${requiredHumanAction ? `: ${requiredHumanAction}` : "."}`;
 }
 
+/** Compact operator-facing state; durable worker details remain in the registry. */
+export function buildSupervisorStatusReport({ parentKey, status } = {}) {
+  const taskKey = status?.taskKey ?? "unknown task";
+  const lifecycle = status?.lifecycle ?? "unknown";
+  const agent = status?.agent ? `${status.agent.name} (${status.agent.state})` : "none";
+  const retained = status?.retained ?? {};
+  return [
+    `Crosby supervisor — ${parentKey ?? "unknown parent"}`,
+    `Task: ${taskKey} (${lifecycle})`,
+    `Attempts: ${Number(status?.attempts ?? 0)}; recoveries: ${Number(status?.recoveryAttempts ?? 0)}`,
+    `Agent: ${agent}`,
+    retained.tab ? `Retained tab: \`${retained.tab}\`` : null,
+    retained.worktree ? `Retained worktree: \`${retained.worktree}\`` : null,
+    retained.branch ? `Retained branch: \`${retained.branch}\`` : null,
+  ].filter(Boolean).join("\n");
+}
+
 export function buildFinalIntegrationComment({ parent, children } = {}) {
   const childLinks = (Array.isArray(children) ? children : []).map((child) => child?.url ? `[${child.identifier}](${child.url})` : child?.identifier).filter(Boolean);
   return `${parent?.identifier ?? "Parent"} integration checks passed. Children: ${childLinks.join(", ") || "none"}.`;

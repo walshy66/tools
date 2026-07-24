@@ -8,6 +8,7 @@ import {
   selectGlobalWorkerCandidates,
   integrateWorkerReport,
   runFinalIntegrationChecks,
+  createCrosbySupervisor,
 } from "./scheduler.mjs";
 
 function harness({ existingWorker, inspectError, startError, promptError } = {}) {
@@ -286,6 +287,60 @@ test("final integration checks run in order and fail closed", async () => {
     /second check failed/,
   );
   assert.deepEqual(calls, [["/parent", ["first", "second"]]]);
+});
+
+test("supervisor controls require confirmation for stop and cleanup while retaining task evidence until cleanup", async () => {
+  const existingWorker = {
+    lifecycle: "running",
+    attemptCount: 1,
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    parentWorktree: { path: "/managed/COA-360/parent" },
+    herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
+  };
+  const { registry, calls } = harness({ existingWorker });
+  const cleaned = [];
+  const supervisor = createCrosbySupervisor({
+    registryRoot: "/registry",
+    repositoryIdentity: "repo",
+    parentKey: "COA-360",
+    herdr: {
+      inspectAgent: async ({ agent }) => ({ name: agent, state: "working" }),
+      promptAgent: async (input) => { calls.push(["promptAgent", input]); return { state: "working" }; },
+      closeTaskTab: async (input) => { calls.push(["closeTaskTab", input]); return { tab: input.tab }; },
+    },
+    createRegistryStore: () => ({ root: "/registry", repositoryIdentity: "repo", parentKey: "COA-360" }),
+    readRegistry: async () => structuredClone(registry),
+    updateWorkerRecord: async (_store, key, patch) => {
+      registry.workers[key] = { ...(registry.workers[key] ?? {}), ...structuredClone(patch) };
+      return registry.workers[key];
+    },
+    cleanupTask: async ({ worker }) => cleaned.push(worker.task.path),
+  });
+
+  assert.deepEqual(await supervisor.status({ taskKey: "COA-365" }), {
+    taskKey: "COA-365",
+    lifecycle: "running",
+    attempts: 1,
+    recoveryAttempts: 0,
+    agent: { name: "crosby-coa-365", state: "working" },
+    retained: { tab: "tab-365", worktree: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365" },
+  });
+  assert.equal((await supervisor.stop({ taskKey: "COA-365" })).requiresConfirmation, true);
+  assert.equal(registry.workers["COA-365"].lifecycle, "running");
+
+  await supervisor.pause({ taskKey: "COA-365" });
+  await supervisor.resume({ taskKey: "COA-365" });
+  await supervisor.stop({ taskKey: "COA-365", confirmed: true });
+  assert.equal(registry.workers["COA-365"].lifecycle, "stopped");
+  assert.equal(registry.workers["COA-365"].task.path, "/managed/COA-360/tasks/COA-365");
+  assert.equal((await supervisor.cleanup({ taskKey: "COA-365" })).requiresConfirmation, true);
+
+  await supervisor.cleanup({ taskKey: "COA-365", confirmed: true });
+  assert.deepEqual(cleaned, ["/managed/COA-360/tasks/COA-365"]);
+  assert.equal(registry.workers["COA-365"].lifecycle, "cleaned");
+  assert.equal(registry.workers["COA-365"].task, null);
+  assert.equal(registry.workers["COA-365"].herdr, null);
+  assert.equal(calls.filter(([operation]) => operation === "closeTaskTab").length, 1);
 });
 
 test("reuses the recorded task worktree once, then retains evidence for review after a second recovery failure", async () => {

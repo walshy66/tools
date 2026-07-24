@@ -168,6 +168,128 @@ export async function runFinalIntegrationChecks({ parentWorktreePath, config, op
   return runVerification({ cwd: text(parentWorktreePath, "parent integration worktree"), verification: validated.finalIntegrationCommands });
 }
 
+function compactWorkerStatus(taskKey, worker, agentState) {
+  return {
+    taskKey,
+    lifecycle: worker?.lifecycle ?? "unregistered",
+    attempts: Number(worker?.attemptCount ?? 0),
+    recoveryAttempts: Number(worker?.recoveryAttempts ?? 0),
+    ...(worker?.herdr?.agent ? { agent: { name: worker.herdr.agent, state: agentState ?? "unknown" } } : {}),
+    ...(worker?.task?.path || worker?.task?.branch || worker?.herdr?.tab
+      ? {
+          retained: {
+            ...(worker?.herdr?.tab ? { tab: worker.herdr.tab } : {}),
+            ...(worker?.task?.path ? { worktree: worker.task.path } : {}),
+            ...(worker?.task?.branch ? { branch: worker.task.branch } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Provides compact, task-keyed operator controls. Stop and cleanup deliberately
+ * return their impact before doing anything destructive; callers must pass an
+ * explicit confirmation on a second invocation.
+ */
+export function createCrosbySupervisor(options = {}) {
+  const registryRoot = text(options.registryRoot, "registryRoot");
+  const repositoryIdentity = text(options.repositoryIdentity, "repositoryIdentity");
+  const parentKey = text(options.parentKey, "parentKey");
+  const herdr = options.herdr;
+  if (!herdr) throw new VisibleWorkerLaunchError("A validated Herdr client is required.");
+
+  const dependencies = {
+    createRegistryStore: options.createRegistryStore ?? createRegistryStore,
+    readRegistry: options.readRegistry ?? readRegistry,
+    updateWorkerRecord: options.updateWorkerRecord ?? updateWorkerRecord,
+    cleanupTask: options.cleanupTask,
+  };
+  const store = dependencies.createRegistryStore({ root: registryRoot, repositoryIdentity, parentKey });
+
+  async function registered(taskKey) {
+    const key = text(taskKey, "task key");
+    const registry = await dependencies.readRegistry(store);
+    const worker = registry.workers?.[key];
+    if (!worker) throw new VisibleWorkerLaunchError(`No Crosby worker is recorded for ${key}.`);
+    return { key, worker };
+  }
+
+  async function status({ taskKey } = {}) {
+    const { key, worker } = await registered(taskKey);
+    let agentState;
+    if (activeWorker(worker)) {
+      try {
+        agentState = (await herdr.inspectAgent({ agent: worker.herdr.agent })).state;
+      } catch {
+        agentState = "unknown";
+      }
+    }
+    return compactWorkerStatus(key, worker, agentState);
+  }
+
+  async function ask({ taskKey, message } = {}) {
+    const { key, worker } = await registered(taskKey);
+    if (!worker?.herdr?.agent) throw new VisibleWorkerLaunchError(`Worker ${key} has no Herdr agent to contact.`);
+    await herdr.promptAgent({ agent: worker.herdr.agent, prompt: text(message, "operator message"), wait: false });
+    await dependencies.updateWorkerRecord(store, key, { lastOperatorMessageAt: new Date().toISOString() });
+    return status({ taskKey: key });
+  }
+
+  async function pause({ taskKey } = {}) {
+    const { key, worker } = await registered(taskKey);
+    if (!activeWorker(worker)) throw new VisibleWorkerLaunchError(`Worker ${key} is not running and cannot be paused.`);
+    await herdr.promptAgent({ agent: worker.herdr.agent, prompt: "Pause work now. Do not make further changes; report that you are paused and wait for an explicit resume.", wait: false });
+    await dependencies.updateWorkerRecord(store, key, { lifecycle: "paused", pausedAt: new Date().toISOString() });
+    return status({ taskKey: key });
+  }
+
+  async function resume({ taskKey } = {}) {
+    const { key, worker } = await registered(taskKey);
+    if (worker?.lifecycle !== "paused") throw new VisibleWorkerLaunchError(`Worker ${key} is not paused and cannot be resumed.`);
+    if (!worker?.herdr?.agent) throw new VisibleWorkerLaunchError(`Worker ${key} has no Herdr agent to resume.`);
+    await herdr.promptAgent({ agent: worker.herdr.agent, prompt: "Resume the assigned Crosby task from the retained worktree and continue with its required verification.", wait: false });
+    await dependencies.updateWorkerRecord(store, key, { lifecycle: "running", resumedAt: new Date().toISOString() });
+    return status({ taskKey: key });
+  }
+
+  function impact(key, worker, action) {
+    return {
+      requiresConfirmation: true,
+      action,
+      taskKey: key,
+      impact: compactWorkerStatus(key, worker),
+    };
+  }
+
+  async function stop({ taskKey, confirmed = false } = {}) {
+    const { key, worker } = await registered(taskKey);
+    if (!confirmed) return impact(key, worker, "stop");
+    if (worker?.herdr?.tab && worker.lifecycle !== "stopped") await herdr.closeTaskTab({ tab: worker.herdr.tab });
+    await dependencies.updateWorkerRecord(store, key, { lifecycle: "stopped", stoppedAt: new Date().toISOString() });
+    return status({ taskKey: key });
+  }
+
+  async function cleanup({ taskKey, confirmed = false } = {}) {
+    const { key, worker } = await registered(taskKey);
+    if (!confirmed) return impact(key, worker, "cleanup");
+    if (typeof dependencies.cleanupTask !== "function") {
+      throw new VisibleWorkerLaunchError("Cleanup is unavailable because the supervisor has no managed-worktree cleanup operation.");
+    }
+    if (worker?.herdr?.tab && worker.lifecycle !== "stopped") await herdr.closeTaskTab({ tab: worker.herdr.tab });
+    await dependencies.cleanupTask({ taskKey: key, worker });
+    await dependencies.updateWorkerRecord(store, key, {
+      lifecycle: "cleaned",
+      cleanedAt: new Date().toISOString(),
+      task: null,
+      herdr: null,
+    });
+    return status({ taskKey: key });
+  }
+
+  return { status, ask, pause, resume, stop, cleanup };
+}
+
 export function workerReportToExecutionResult(report, child) {
   const workerReport = validateWorkerReport(report);
   const issueKey = text(child?.identifier, "child issue key");

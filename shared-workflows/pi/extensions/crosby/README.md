@@ -1,233 +1,101 @@
 # Crosby
 
-Crosby is the Linear execution orchestrator for this workflow.
+Crosby executes Linear child tasks in isolated, visible Herdr/Pi workers. It uses one managed parent worktree per Linear parent and one managed task worktree per child, then serially integrates verified task branches.
 
-## Quick start
+## Configure
 
-### Run one parent manually
+1. Install the extension and make `linear`, `git`, and `herdr` available to Pi.
+2. Add a folder label to the parent issue that resolves to the local repository (for example `tools-coa-360`). Crosby searches `C:\Users\camer\Documents\<label>` and `C:\Users\camer\Documents\projects\<label>`.
+3. Give the parent a Linear `branchName` and create AFK child tasks in `Ready to Build`.
+4. Add exactly one work-type label to every execution task (`wt:process-automation` for Crosby work).
+5. Optionally configure Claude PR review:
+   - `CROSBY_CLAUDE_MODEL` (default `claude-sonnet-4-6`)
+   - `CROSBY_CLAUDE_EFFORT` (default `medium`)
 
-```text
-/crosby COA-129
+Pi workers inherit normal Pi model/session selection. The optional variables apply only to the explicit Claude PR-review worker.
+
+## Task metadata
+
+A child task must declare its execution contract in its Linear description:
+
+```md
+## Crosby execution
+
+- Parallel: sequential
+- File scope:
+  - `shared-workflows/pi/extensions/crosby/index.ts`
+- Verification:
+  - `node --test shared-workflows/pi/extensions/crosby/scheduler.test.mjs`
 ```
 
-Use this to kick off the next runnable child under one parent immediately.
+Use `Parallel: allowed` only when file scopes are disjoint. The scheduler rejects invalid contracts, unresolved blockers, overlapping scopes, and missing verification before a task is selected. Integration validates changed paths and runs the declared verification before committing and merging.
 
-### Run the watcher
+## Execute a queue
 
 ```text
+/crosby COA-360
 /crosby --watch
+/crosby push COA-360
+/crosby review COA-360
 ```
 
-Use this to poll for parent issues in `Execute` and process eligible child issues automatically.
+- `/crosby COA-360` selects the next unblocked `Ready to Build` child under that parent.
+- `/crosby --watch` polls parents in `Execute` every 60 seconds.
+- `/crosby push COA-360` explicitly pushes the parent branch and creates or updates its PR.
+- `/crosby review COA-360` explicitly runs the Claude PR review.
 
-### Stop the watcher
+Crosby moves a selected child to `Build`, creates a visible Herdr tab, starts a Pi worker, and records the task worktree, branch, tab, pane, and agent in its local registry. A successful integration moves the child to `Done`; a recoverable integration or worker problem moves it to `In Review` with retained evidence. When every child is `Done`, it runs final integration commands, posts the consolidated parent report, and moves the parent to `In Review`.
 
-- stop the current Pi run
-- close the terminal/session running it
-- or press `Ctrl+C`
+## Observe and control workers
 
-### Core rule
+Crosby registers task-keyed tools for both explicit calls and conversational operator requests. Every operation requires both the owning parent key and the task key, so it cannot accidentally target another queue:
 
-- parent in `Execute` = active workflow
-- child in `Ready to Build` = runnable work
-- one parent issue = one feature branch
+- `crosby_task_status(parentKey, taskKey)` — compact lifecycle, attempts, agent state, and retained tab/worktree/branch.
+- `crosby_task_ask(parentKey, taskKey, message)` — send an operator message to the worker.
+- `crosby_task_pause(parentKey, taskKey)` — instruct the worker to pause and retain evidence.
+- `crosby_task_resume(parentKey, taskKey)` — resume a paused worker.
+- `crosby_task_stop(parentKey, taskKey)` — close the worker tab while retaining the task worktree and branch.
+- `crosby_task_cleanup(parentKey, taskKey)` — remove the retained worker tab and managed task worktree.
 
-## What Crosby does
+The same supervisor operation backs explicit tool use and conversational routing. Status deliberately reports compact state; full durable task records remain in the local Crosby registry at `~/.pi/crosby/registries/`.
 
-Crosby supports four commands:
+Stop and cleanup first show their exact affected task/tab/worktree and require a UI confirmation. Cancelling leaves everything unchanged. Cleanup is the only action that removes a retained task worktree. It is intentionally destructive; inspect, commit, or copy any needed evidence before confirming it.
 
-- **`/crosby COA-129`**: run one parent now
-- **`/crosby --watch`**: poll Linear and automatically process active parents
-- **`/crosby push COA-129`**: push the parent branch and create/update a PR
-- **`/crosby review COA-129`**: run automated review against the parent PR
+## Lifecycle and recovery
 
-It uses:
+1. **launching/running**: a visible Herdr worker owns the task worktree.
+2. **paused**: the worker was asked to stop changing files until `resume`.
+3. **stopped**: its tab is closed, but its worktree and branch remain for inspection or recovery.
+4. **review-required**: automatic recovery or integration could not safely proceed; inspect the retained evidence and resolve the Linear child manually.
+5. **cleaned**: an operator explicitly confirmed removal of the retained tab/worktree.
 
-- **Pi build worker** for child implementation
-  - model is inherited from normal Pi resolution/config
-- **Claude review worker** for explicit PR review
-  - default model: `claude-sonnet-4-6`
-  - default effort: `medium`
+After a Crosby restart, it reconciles an existing recorded Herdr agent instead of starting a duplicate. If that agent is unavailable, it makes at most one automatic same-worktree recovery. A second recovery failure is retained for review rather than retried indefinitely.
 
-## Commands
+For a blocked, failed, or invalid worker report:
 
-### Execute child work
+1. Run `crosby_task_status` for the parent and task keys.
+2. Inspect the visible Herdr transcript, retained tab, worktree, branch, and the child’s detailed Linear comment.
+3. Use `ask`, `pause`, or `resume` when the worker can continue safely.
+4. Otherwise resolve the issue manually, then move it to the appropriate Linear state. Use `cleanup` only after preserving any required evidence.
 
-```text
-/crosby COA-129
-```
+## Retention and cleanup
 
-What happens:
+Completed, stopped, and review-required task tabs/worktrees are retained by default. Normal completion does **not** automatically close a task tab or delete a worktree. This makes integration evidence and recovery inspectable. Explicit cleanup closes a remaining tab (if any) and uses Git worktree removal for the task path; it does not silently clean sibling tasks.
 
-1. Crosby loads the parent
-2. Reads the child issues
-3. Picks the next unblocked child in `Ready to Build`
-4. Ensures the repo is on the parent feature branch
-   - checks out the existing branch if present
-   - creates it if missing
-5. Moves that child to `Build`
-6. Runs the Pi worker
-7. Moves the child to:
-   - `Done` if complete
-   - `In Review` if human review/action is needed
-8. Posts a progress comment to the parent
-9. If all children are `Done`, Crosby posts the final parent summary and moves the parent to `In Review`
+## Migration from earlier Crosby behavior
 
-### Watch mode
+Earlier Crosby runs executed workers directly from the parent checkout and offered no task-keyed supervisor controls. Migrate by:
 
-```text
-/crosby --watch
-```
+1. Adding task contracts and the work-type label to current child issues.
+2. Starting or resuming work through `/crosby <PARENT-KEY>` so Crosby creates managed worktrees and a registry record.
+3. Using the supervisor tools for status and recovery instead of closing terminals or deleting worktrees manually.
+4. Keeping existing parent `Build`/`Building` states as valid resume states; do not reset them merely to restart Crosby.
+5. Cleaning up old manual worktrees only after confirming their contents are integrated or no longer needed.
 
-Current behavior:
+## Safety rules
 
-- polls every **60 seconds**
-- looks for **parent issues in `Execute`**
-- reads the children under those parents
-- picks the next unblocked child in `Ready to Build`
-- ensures the repo is on the parent feature branch
-- moves that child to `Build`
-- runs the Pi worker
-- posts progress back to the parent
-- when all child issues are complete, posts the final summary and moves the parent to `In Review`
-
-## How to stop watch mode
-
-There is no separate `/crosby --stop` command.
-
-To stop watch mode:
-
-- stop the current Pi run
-- or close the terminal/session running it
-- or use `Ctrl+C` if it is running in a terminal
-
-If watch mode is off, nothing runs automatically.
-
-## Workflow states
-
-### Parent issue states
-
-- `Ready to Build`
-  - inactive
-  - watcher ignores it
-- `Execute`
-  - active
-  - watcher will inspect this parent and try to run child work
-- `In Review`
-  - all child work is complete and ready for human QA / explicit push / explicit review
-- `Done`
-  - fully finished
-
-### Child issue states
-
-- `Backlog`
-  - typically used for `HITL` child issues
-  - not auto-run
-- `Ready to Build`
-  - runnable state for buildable child issues
-- `Build`
-  - currently being worked by Crosby
-- `In Review`
-  - implementation finished but human review/action is required
-- `Done`
-  - complete
-
-## Intended issue creation defaults
-
-- `AFK` child issues -> `Ready to Build`
-- `HITL` child issues -> `Backlog`
-
-## How the workflow is intended to work
-
-### Manual path
-
-1. Create child issues
-2. AFK children start in `Ready to Build`
-3. Run:
-
-```text
-/crosby COA-129
-```
-
-4. Crosby works the next runnable child under that parent
-
-### Watch path
-
-1. Create child issues
-2. AFK children start in `Ready to Build`
-3. Move the **parent** issue to `Execute`
-4. Start watch mode:
-
-```text
-/crosby --watch
-```
-
-5. Crosby finds parents in `Execute`
-6. It works child issues in `Ready to Build`, one at a time
-
-## Important rules
-
-- Watch mode is driven by **parent issues in `Execute`**
-- Child issues do **not** need to be moved to `Execute`
-- Child issues must be in **`Ready to Build`** to be auto-run
-- One parent issue = one feature branch
-- Before child execution, Crosby resolves the parent `branchName`, checks out that branch, or creates it if needed
-- If the resolved project folder is not a git repo, Crosby stops with a descriptive error
-- If Crosby would need to switch branches and the repo has uncommitted changes, it stops with a descriptive error instead of risking work on the wrong branch
-- Blocked children are skipped until blockers are `Done`
-- If a child is already in `Build`, Crosby will not start another child for that parent
-
-## Push/review behavior
-
-When all child issues are `Done`, normal execution stops after:
-
-1. posting the final summary to the parent Linear issue
-2. moving the parent to `In Review`
-
-GitHub work is explicit:
-
-### Push
-
-```text
-/crosby push COA-129
-```
-
-1. ensures the repo is on the parent branch
-2. requires a clean working tree
-3. pushes the branch to `origin`
-4. creates a PR if missing, otherwise updates the existing PR body
-5. posts the PR link back to the parent Linear issue
-
-### Review
-
-```text
-/crosby review COA-129
-```
-
-1. ensures the repo is on the parent branch
-2. requires a clean working tree
-3. requires an existing PR
-4. syncs `implementation_summary.md` into the PR body
-5. runs Claude review
-6. posts the review result to the PR
-7. posts the review summary back to the parent Linear issue
-
-## Config overrides
-
-Optional environment variables:
-
-- `CROSBY_CLAUDE_MODEL`
-- `CROSBY_CLAUDE_EFFORT`
-
-Pi build workers now inherit model selection from normal Pi config/session resolution.
-
-Defaults:
-
-- `CROSBY_CLAUDE_MODEL=claude-sonnet-4-6`
-- `CROSBY_CLAUDE_EFFORT=medium`
-
-## Files
-
-- `index.ts` - Pi extension entrypoint
-- `lib.mjs` - core Crosby logic
-- `lib-v2.mjs` - active imported library used by the extension
+- Parents in `Execute` are watched; children must be `Ready to Build` to be selected.
+- Blocked children are skipped until every blocker is `Done`.
+- One parent has one feature branch; task branches are integrated serially.
+- Crosby fails closed if it cannot resolve a repository folder, branch, task contract, worker report, or required verification.
+- Push and PR review remain explicit operations and require a clean working tree.

@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,6 +11,7 @@ import {
   reviewParentPullRequest,
   runQueueExecution,
   runWatchMode,
+  resolveIssueWorkingDirectory,
 } from "./lib-v2.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
 import {
@@ -19,8 +21,9 @@ import {
   VisibleWorkerRecoveryError,
   VisibleWorkerReportError,
   workerReportToExecutionResult,
+  createCrosbySupervisor,
 } from "./scheduler.mjs";
-import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment } from "./linear-reporting.mjs";
+import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment, buildSupervisorStatusReport } from "./linear-reporting.mjs";
 import { parseProjectConfig } from "./project-config.mjs";
 
 function getLinearInvocation(args: string[]) {
@@ -607,7 +610,113 @@ async function runVisibleWorker(
   return { code: 0, stdout: JSON.stringify({ ...execution, integration }), stderr: "" };
 }
 
+const supervisorTaskSchema = Type.Object({
+  parentKey: Type.String({ description: "Linear parent queue key, for example COA-360." }),
+  taskKey: Type.String({ description: "Explicit Linear child task key, for example COA-367." }),
+});
+const supervisorAskSchema = Type.Object({
+  parentKey: Type.String({ description: "Linear parent queue key, for example COA-360." }),
+  taskKey: Type.String({ description: "Explicit Linear child task key, for example COA-367." }),
+  message: Type.String({ description: "The operator message to send to the retained worker." }),
+});
+
+function supervisorToolResult(parentKey: string, status: any, prefix?: string) {
+  const report = buildSupervisorStatusReport({ parentKey, status });
+  return {
+    content: [{ type: "text" as const, text: prefix ? `${prefix}\n\n${report}` : report }],
+    details: status,
+  };
+}
+
+async function createSupervisorForTask(pi: ExtensionAPI, parentKey: string, taskKey: string) {
+  const queue = await fetchParentQueue(parentKey, (key) => loadIssueFromLinear(pi, key));
+  if (!queue.children.some((child: any) => child?.identifier === taskKey)) {
+    throw new Error(`Task ${taskKey} is not a child of ${queue.parent.identifier}. Recovery: provide the parent queue key that owns the task.`);
+  }
+  const cwd = resolveIssueWorkingDirectory(queue.parent).cwd;
+  const repositoryIdentity = await resolveRepositoryIdentity(pi, cwd);
+  const herdr = createHerdrClient({ invoke: (operation: string, input: any) => invokeHerdrCli(pi, operation, input) });
+  return createCrosbySupervisor({
+    registryRoot: path.join(homedir(), ".pi", "crosby"),
+    repositoryIdentity,
+    parentKey: queue.parent.identifier,
+    herdr,
+    cleanupTask: async ({ worker }: any) => {
+      const taskPath = String(worker?.task?.path ?? "").trim();
+      if (!taskPath) throw new Error("Recorded Crosby task has no managed worktree path to clean up.");
+      const controlPath = String(worker?.parentWorktree?.path ?? cwd).trim();
+      await execGit(pi, ["-C", controlPath, "worktree", "remove", "--force", taskPath], cwd);
+    },
+  });
+}
+
+function registerSupervisorTools(pi: ExtensionAPI) {
+  const taskTool = (
+    name: string,
+    label: string,
+    description: string,
+    promptSnippet: string,
+    promptGuidelines: string[],
+    operation: "status" | "pause" | "resume",
+  ) => {
+    pi.registerTool({
+      name,
+      label,
+      description,
+      promptSnippet,
+      promptGuidelines,
+      parameters: supervisorTaskSchema,
+      async execute(_toolCallId, params) {
+        const supervisor = await createSupervisorForTask(pi, params.parentKey, params.taskKey);
+        const status = await supervisor[operation]({ taskKey: params.taskKey });
+        return supervisorToolResult(params.parentKey, status);
+      },
+    });
+  };
+
+  taskTool("crosby_task_status", "Crosby Task Status", "Show compact supervisor status for an explicit Crosby task key.", "Show Crosby task status.", ["Use crosby_task_status when an operator asks about a Crosby task or worker."], "status");
+  taskTool("crosby_task_pause", "Pause Crosby Task", "Ask a running Crosby worker to pause and retain its task evidence.", "Pause a Crosby task.", ["Use crosby_task_pause when an operator asks to pause a specific Crosby worker."], "pause");
+  taskTool("crosby_task_resume", "Resume Crosby Task", "Resume a previously paused Crosby worker.", "Resume a Crosby task.", ["Use crosby_task_resume when an operator asks to resume a specific paused Crosby worker."], "resume");
+
+  pi.registerTool({
+    name: "crosby_task_ask",
+    label: "Ask Crosby Task",
+    description: "Send an operator message to an explicit retained Crosby worker.",
+    promptSnippet: "Ask a Crosby worker for an update.",
+    promptGuidelines: ["Use crosby_task_ask when an operator conversationally asks a specific Crosby worker a question."],
+    parameters: supervisorAskSchema,
+    async execute(_toolCallId, params) {
+      const supervisor = await createSupervisorForTask(pi, params.parentKey, params.taskKey);
+      const status = await supervisor.ask({ taskKey: params.taskKey, message: params.message });
+      return supervisorToolResult(params.parentKey, status, "Message sent.");
+    },
+  });
+
+  for (const [name, label, action] of [["crosby_task_stop", "Stop Crosby Task", "stop"], ["crosby_task_cleanup", "Clean Up Crosby Task", "cleanup"]] as const) {
+    pi.registerTool({
+      name,
+      label,
+      description: `${action === "stop" ? "Stop a worker while retaining its task worktree." : "Remove a retained Crosby tab and managed task worktree."} Confirmation is required.`,
+      promptSnippet: `${action === "stop" ? "Stop" : "Clean up"} a Crosby task.`,
+      promptGuidelines: [`Use ${name} when an operator asks to ${action} a specific Crosby task; it always confirms the reported impact first.`],
+      parameters: supervisorTaskSchema,
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const supervisor = await createSupervisorForTask(pi, params.parentKey, params.taskKey);
+        const preview = await supervisor[action]({ taskKey: params.taskKey });
+        const confirmation = await ctx.ui.confirm(
+          `${action === "stop" ? "Stop" : "Clean up"} Crosby task ${params.taskKey}?`,
+          `${buildSupervisorStatusReport({ parentKey: params.parentKey, status: preview.impact })}\n\n${action === "stop" ? "This closes the worker tab but retains its worktree and branch." : "This permanently removes the retained worker tab and managed task worktree."}`,
+        );
+        if (!confirmation) return supervisorToolResult(params.parentKey, preview.impact, "Cancelled; no destructive action was taken.");
+        const status = await supervisor[action]({ taskKey: params.taskKey, confirmed: true });
+        return supervisorToolResult(params.parentKey, status, `${action === "stop" ? "Stopped" : "Cleaned up"}.`);
+      },
+    });
+  }
+}
+
 export default function crosbyExtension(pi: ExtensionAPI) {
+  registerSupervisorTools(pi);
   pi.registerCommand("crosby", {
     description: "Execute parent child-work, watch Execute parents, or explicitly push/review a parent PR",
     handler: async (args, ctx) => {
