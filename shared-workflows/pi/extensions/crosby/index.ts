@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  buildRalphLoopPrompt,
   fetchParentQueue,
   parseCrosbyCommandArgs,
   publishParentPullRequest,
