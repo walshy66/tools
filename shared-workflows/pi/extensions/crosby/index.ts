@@ -610,7 +610,6 @@ async function launchVisibleCandidates(pi: ExtensionAPI, runtime: any, contexts:
   for (const candidate of candidates) {
     const context = candidate;
     const child = candidate.child;
-    await ensureParentBranch(pi, context.parent, context.cwd);
     await moveIssue(pi, child.identifier, "Building");
     try {
       const result = await runtime.scheduler.launch({
