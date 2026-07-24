@@ -11,6 +11,7 @@ import {
   publishParentPullRequest,
   reviewParentPullRequest,
   resolveIssueWorkingDirectory,
+  selectNextRunnableChild,
 } from "./lib-v2.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
 import { createHerdrCliInvoker } from "./herdr-cli.mjs";
@@ -22,7 +23,6 @@ import {
   runFinalIntegrationChecks,
   workerReportToExecutionResult,
   createCrosbySupervisor,
-  selectGlobalWorkerCandidates,
 } from "./scheduler.mjs";
 import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment, buildSupervisorStatusReport } from "./linear-reporting.mjs";
 import { parseProjectConfig } from "./project-config.mjs";
@@ -601,49 +601,93 @@ async function reconcileVisibleQueue(pi: ExtensionAPI, runtime: any, context: an
   return settled;
 }
 
-async function launchVisibleCandidates(pi: ExtensionAPI, runtime: any, contexts: any[]) {
-  const activeWorkers = (await runtime.scheduler.listAllWorkers())
-    .filter((worker: any) => ["launching", "running", "recovering"].includes(worker.lifecycle))
-    .map((worker: any) => ({ repositoryIdentity: worker.registry?.repositoryIdentity, contract: worker.contract ?? { parallel: "sequential" } }));
-  const candidates = selectGlobalWorkerCandidates({ queues: contexts, activeWorkers, capacity: 2 });
-  const launched = [];
+async function integrateWorker(pi: ExtensionAPI, runtime: any, context: any, child: any, worker: any, report: any) {
+  const integration = await integrateWorkerReport({
+    parent: { integrationWorktree: worker.parentWorktree?.path },
+    child,
+    worker,
+    report,
+  });
+  const workerResult = integrationExecution(report, integration, child);
+  await runtime.scheduler.markWorkerIntegrated(worker, integration);
+  await moveIssue(pi, child.identifier, workerResult.outcome === "done" ? "Done" : "In Review");
+  const event = { parent: context.parent, child, workerResult };
+  appendWorkerTranscript(pi, event);
+  await reportIntegrationToLinear(pi, event);
+  await runtime.scheduler.markWorkerFinalized(worker);
+  return { child, workerResult };
+}
 
-  for (const candidate of candidates) {
-    const context = candidate;
-    const child = candidate.child;
-    await moveIssue(pi, child.identifier, "Building");
-    try {
-      const result = await runtime.scheduler.launch({
-        parent: context.parent,
-        child,
-        prompt: buildRalphLoopPrompt(child),
-        sourcePath: context.cwd,
-        repositoryIdentity: context.repositoryIdentity,
-        workspace: runtime.workspace,
-      });
-      const event = { parent: context.parent, child, topLevelChild: child, path: [child], cwd: context.cwd };
-      pi.appendEntry("crosby-worker-started", {
-        parentIssueKey: context.parent.identifier,
-        topLevelIssueKey: child.identifier,
-        issueKey: child.identifier,
-        issuePath: child.identifier,
-        cwd: context.cwd,
-      });
-      launched.push({ child, result, event });
-    } catch (error) {
-      await moveIssue(pi, child.identifier, "Ready to Build");
-      throw error;
+async function waitForAndIntegrateWorker(pi: ExtensionAPI, runtime: any, context: any, child: any, worker: any) {
+  const report = await runtime.scheduler.waitForReport(worker);
+  return integrateWorker(pi, runtime, context, child, worker, report);
+}
+
+async function runVisibleSequentialQueue(pi: ExtensionAPI, runtime: any, queue: any, source: "manual" | "watch") {
+  const settled = [];
+  const launched = [];
+  let context = await queueContext(pi, queue, source);
+
+  while (true) {
+    settled.push(...await reconcileVisibleQueue(pi, runtime, context));
+    const refreshed = await fetchParentQueue(context.parent.identifier, (key) => loadIssueFromLinear(pi, key));
+    context = await queueContext(pi, refreshed, source);
+
+    if (context.children.length > 0 && context.children.every((child: any) => /^done$/i.test(String(child?.state?.name ?? "")))) {
+      return { settled, launched };
     }
+
+    const workers = await runtime.scheduler.listWorkers({ repositoryIdentity: context.repositoryIdentity, parentKey: context.parent.identifier });
+    const active = workers.find((worker: any) => ["launching", "running", "recovering"].includes(worker.lifecycle));
+    if (active) {
+      const taskKey = active?.registry?.taskKey;
+      const activeChild = context.children.find((entry: any) => entry?.identifier === taskKey);
+      if (!activeChild) return { settled, launched };
+      settled.push(await waitForAndIntegrateWorker(pi, runtime, context, activeChild, active));
+      continue;
+    }
+
+    let child;
+    try {
+      ({ child } = selectNextRunnableChild(context));
+    } catch (error) {
+      pi.appendEntry("crosby-no-runnable-child", {
+        parentIssueKey: context.parent.identifier,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { settled, launched };
+    }
+
+    const result = await runtime.scheduler.launch({
+      parent: context.parent,
+      child,
+      prompt: buildRalphLoopPrompt(child),
+      sourcePath: context.cwd,
+      repositoryIdentity: context.repositoryIdentity,
+      workspace: runtime.workspace,
+    });
+    await moveIssue(pi, child.identifier, "Building");
+    pi.appendEntry("crosby-worker-started", {
+      parentIssueKey: context.parent.identifier,
+      topLevelIssueKey: child.identifier,
+      issueKey: child.identifier,
+      issuePath: child.identifier,
+      cwd: context.cwd,
+    });
+    launched.push({ child, result, event: { parent: context.parent, child, topLevelChild: child, path: [child], cwd: context.cwd } });
+    settled.push(await waitForAndIntegrateWorker(pi, runtime, context, child, result.worker));
   }
-  return launched;
 }
 
 async function runVisibleSchedulingCycle(pi: ExtensionAPI, runtime: any, queues: any[], source: "manual" | "watch") {
-  const contexts = await Promise.all(queues.map((queue) => queueContext(pi, queue, source)));
-  const settled = (await Promise.all(contexts.map((context) => reconcileVisibleQueue(pi, runtime, context)))).flat();
-  const refreshedContexts = await Promise.all(contexts.map(async (context) => queueContext(pi, await fetchParentQueue(context.parent.identifier, (key) => loadIssueFromLinear(pi, key)), source)));
-  const launched = await launchVisibleCandidates(pi, runtime, refreshedContexts);
-  return { settled, launched };
+  const results = [];
+  for (const queue of queues) {
+    results.push(await runVisibleSequentialQueue(pi, runtime, queue, source));
+  }
+  return {
+    settled: results.flatMap((result) => result.settled),
+    launched: results.flatMap((result) => result.launched),
+  };
 }
 
 const supervisorTaskSchema = Type.Object({
