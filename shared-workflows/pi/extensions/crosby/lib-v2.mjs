@@ -747,6 +747,10 @@ async function reportChildOutcomeToParent(queue, execution, addComment) {
 async function finalizeParentIfComplete(queue, completedChildren, operations) {
   if (!areAllChildrenDone(queue?.children)) return;
 
+  if (typeof operations.runFinalIntegrationChecks === "function") {
+    await operations.runFinalIntegrationChecks(queue, completedChildren);
+  }
+
   if (typeof operations.finalizeParentCompletion === "function") {
     await operations.finalizeParentCompletion(queue, completedChildren);
     return;
@@ -1043,6 +1047,7 @@ export async function runQueueExecution(initialQueue, operations) {
       addComment: operations.addComment,
       moveIssue: operations.moveIssue,
       finalizeParentCompletion: operations.finalizeParentCompletion,
+      runFinalIntegrationChecks: operations.runFinalIntegrationChecks,
     });
   }
 }

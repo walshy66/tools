@@ -150,7 +150,7 @@ export async function integrateWorkerReport({ parent, child, worker, report, ope
       taskBranch: task.branch,
       message: `Merge ${task.branch} for ${child.identifier}`,
     });
-    return { outcome: "done", changedPaths, verification, commit, merge, contract };
+    return { outcome: "done", changedPaths, verification, commit, merge, contract, parentWorktreePath: parent?.integrationWorktree ?? parent?.worktree?.path };
   } catch (error) {
     const reason = describe(error);
     return {

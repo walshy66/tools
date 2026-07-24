@@ -15,11 +15,13 @@ import { createHerdrClient } from "./herdr-client.mjs";
 import {
   createVisibleWorkerScheduler,
   integrateWorkerReport,
+  runFinalIntegrationChecks,
   VisibleWorkerRecoveryError,
   VisibleWorkerReportError,
   workerReportToExecutionResult,
 } from "./scheduler.mjs";
-import { buildChildIntegrationComment, buildParentIntegrationComment } from "./linear-reporting.mjs";
+import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment } from "./linear-reporting.mjs";
+import { parseProjectConfig } from "./project-config.mjs";
 
 function getLinearInvocation(args: string[]) {
   const configured = process.env.LINEAR_BIN?.trim();
@@ -466,6 +468,18 @@ function appendWorkerTranscript(pi: ExtensionAPI, event: any) {
   });
 }
 
+async function finalizeParentIntegration(pi: ExtensionAPI, queue: any, completedChildren: any[]) {
+  const integration = [...completedChildren].reverse().map((entry) => entry?.workerResult?.integration).find(Boolean);
+  const parentWorktreePath = integration?.parentWorktreePath;
+  if (!parentWorktreePath) {
+    throw new Error(`Cannot run final integration checks for ${queue.parent.identifier}: managed parent worktree is unavailable. Recovery: rerun the final child integration from its retained Crosby worktree.`);
+  }
+  const config = parseProjectConfig(await readFile(path.join(parentWorktreePath, ".pi", "crosby.json"), "utf8"));
+  await runFinalIntegrationChecks({ parentWorktreePath, config });
+  await addIssueComment(pi, queue.parent.identifier, buildFinalIntegrationComment({ parent: queue.parent, children: queue.children }));
+  await moveIssue(pi, queue.parent.identifier, "Review");
+}
+
 async function reportIntegrationToLinear(pi: ExtensionAPI, event: any) {
   const integration = event?.workerResult?.integration;
   if (!integration) return;
@@ -620,6 +634,8 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
               refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
               loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
+              runFinalIntegrationChecks: (queue, completedChildren) => finalizeParentIntegration(pi, queue, completedChildren),
+              finalizeParentCompletion: async () => {},
               onExecutionStart: (event) => {
                 const pathText = formatIssuePath(event.path);
                 ctx.ui.notify(`Crosby starting ${event.child?.identifier ?? "issue"}${pathText ? ` (${pathText})` : ""}.`, "success");
@@ -710,6 +726,8 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
           refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
           loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
+          runFinalIntegrationChecks: (queue, completedChildren) => finalizeParentIntegration(pi, queue, completedChildren),
+          finalizeParentCompletion: async () => {},
           onExecutionStart: (event) => {
             const pathText = formatIssuePath(event.path);
             ctx.ui.notify(`Crosby starting ${event.child?.identifier ?? "issue"}${pathText ? ` (${pathText})` : ""}.`, "success");
