@@ -24,6 +24,7 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 5. Prefer many thin issues over a few thick ones.
 6. Treat Linear as the committed execution view, not the drafting surface.
 7. Never create Linear sub-issues before explicit user approval.
+8. Every executable child issue must declare a Crosby task contract: `Parallel`, `File scope`, and `Verification`.
 
 ## Workflow
 
@@ -42,6 +43,10 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 - Break the work into independent vertical slices
 - Ensure each issue can be understood and tested alone
 - Label blocking dependencies clearly
+- Give every executable slice an explicit Crosby task contract:
+  - `Parallel: allowed` only when blockers are resolved and its file scope does not overlap any task intended to run with it; otherwise use `Parallel: sequential`.
+  - `File scope: repository-relative paths only`, listing the specific files or directories the task may change. Reject or flag absolute paths, drive-qualified paths, `.`, `/`, glob-only scopes, and ambiguous whole-repository scopes; split or clarify the slice instead.
+  - `Verification: <command>` for buildable work, or `Verification: none` only for documentation-only/copy-only work where no meaningful automated check exists.
 - Propose execution windows or grouping when useful
 
 ### 3) Review with the user
@@ -59,11 +64,21 @@ Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be wo
 
 ### 5) Finalize the issue list for approval
 - Present the issue titles in dependency order
-- Include the acceptance criteria for each issue
+- Include the acceptance criteria and Crosby task contract for each executable issue:
+  ```markdown
+  ## Crosby execution
+  - Parallel: allowed|sequential
+  - File scope:
+    - path/to/file-or-directory
+  - Verification:
+    - command to run
+    # or: none (documentation-only/copy-only work)
+  ```
 - Explicitly ask for approval before creating anything in Linear
 
 ### 6) Create Linear sub-issues after approval
 - Only after explicit user approval, create the approved issues in Linear as child issues of the originating parent issue
+- Put each approved executable issue's explicit `## Crosby execution` contract in its Linear description. Do not create an executable issue with any missing field, an invalid/ambiguous file scope, or an unexplained `Verification: none`; return it to drafting instead.
 - Use the Linear CLI to create each child issue under the existing parent
 - Every created child must inherit the parent context:
   - same Linear project as the parent
@@ -94,6 +109,10 @@ Use a numbered list where each proposed issue includes:
 - Execution window / grouping (if applicable)
 - User stories covered
 - Acceptance criteria
+- Crosby execution contract:
+  - Parallel: `allowed` or `sequential`
+  - File scope: explicit repository-relative files/directories
+  - Verification: commands or `none` for documentation-only/copy-only work
 
 After approval and creation, also report:
 
@@ -116,6 +135,10 @@ After approval and creation, also report:
 - Will every created child inherit the parent project and labels?
 - Will every created child receive the correct additive `AFK` or `HITL` label without replacing inherited labels?
 - Was that inheritance and type-label assignment verified after creation?
+- Does every executable issue description contain `Parallel: allowed|sequential`, an explicit repository-relative `File scope`, and `Verification` commands or `none`?
+- Are `Parallel: allowed` tasks free of unresolved blockers and non-overlapping in file scope with their proposed concurrent peers?
+- Were absolute, drive-qualified, root, glob-only, and whole-repository file scopes rejected or flagged for clarification?
+- Is `Verification: none` limited to documentation-only/copy-only work and explicitly justified?
 
 ## Troubleshooting
 
@@ -150,6 +173,11 @@ After approval and creation, also report:
 - Immediately correct the child issues so they match the parent project and labels.
 - Use additive label commands such as `linear issue label add <issue> <label>` so existing labels are preserved.
 - If the parent metadata could not be resolved confidently, stop and ask the user before creating additional children.
+
+**Task contract is missing or unsafe**
+- Do not create the issue. Add all three Crosby fields before returning it for approval.
+- Replace an absolute or ambiguous whole-repository scope with the smallest repository-relative files/directories that the slice needs; split the slice if that is not possible.
+- Change `Parallel` to `sequential` when blockers are unresolved or scopes overlap, and replace unjustified `Verification: none` with a concrete command.
 
 **Adding AFK/HITL labels removed existing labels**
 - Treat this as an error.

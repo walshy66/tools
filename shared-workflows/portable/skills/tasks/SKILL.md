@@ -96,7 +96,11 @@ In Pi:
    - Assign unique ID (T001, T002, ...)
    - Write clear, atomic description (one file or one feature)
    - Assign to execution window (T001 in Window 1, T002 in Window 1, etc.)
-   - Mark if parallel [P] (within same window)
+   - Add an explicit Crosby task contract:
+     - `Parallel: allowed|sequential`
+     - `File scope: repository-relative paths only`, listing the specific files/directories the task may change
+     - `Verification`: commands or `none` (use `none` only for documentation-only/copy-only work)
+   - Mark with `[P]` only when `Parallel: allowed`: blockers are explicit and already resolved, all concurrent task scopes are non-overlapping, and each task has the complete contract above. Otherwise use `Parallel: sequential` and omit `[P]`.
    - Show dependencies
    - Show traceability (which requirement/story)
    - Include test expectations
@@ -105,6 +109,9 @@ In Pi:
     ```
     T001 [P] Create execution_note migration
     - Window: 1 (Foundation)
+    - Parallel: allowed|sequential
+    - File scope: repository-relative paths only
+    - Verification: command or `none`
     - Traceability: FR-001
     - Dependencies: none
     - Phase: Database
@@ -127,8 +134,8 @@ In Pi:
     Token Budget: 60-80k
     Checkpoint: All tasks pass, migration runs, models validated
 
-    - T001 [P] Create migration file
-    - T002 [P] Add schema to Prisma
+    - T001 Create migration file
+    - T002 Add schema to Prisma
     - T003 Create ExecutionNote model
     - T004 Create ExecutionNoteRepository (scoped userId)
 
@@ -185,10 +192,12 @@ In Pi:
     ```
 
 13. **Identify Parallel Opportunities**
-    - Mark tasks with [P] if they can run simultaneously WITHIN the same window
-    - Example: T001 and T002 in Window 1 both write to schema.prisma, so NOT parallel
-    - Example: T005 and T006 both write tests but different files, so [P]
-    - **Rule**: [P] tasks must not touch same file
+    - Mark tasks with `[P]` only if their explicit `Parallel: allowed` metadata permits it, they can run simultaneously **within the same window**, and every blocker is explicit and resolved before launch.
+    - `Parallel: allowed` requires non-overlapping repository-relative `File scope` entries across concurrent tasks; sharing a file or an ancestor/descendant directory scope is an overlap.
+    - Reject or flag absolute paths, drive-qualified paths, `.`, `/`, glob-only scopes, and ambiguous whole-repository scopes. Narrow or split the task until its scope is explicit.
+    - Every task must state `Verification`: commands or `none`. `Verification: none` is valid only for documentation-only/copy-only work; buildable work must name its minimum command(s).
+    - Example: T001 and T002 have a dependency, so they are sequential even if they edit different files.
+    - Example: two independent tests in different files with disjoint scopes and passing all contract checks may be `[P]`.
 
 14. **Define Checkpoints**
     - After each window, implement skill pauses
@@ -213,7 +222,8 @@ In Pi:
 
 ## Format Guide
 
-- **[P]**: Can run in parallel (different files, same window)
+- **[P]**: May run in parallel only when `Parallel: allowed`, blockers are explicit and resolved, and `File scope` values are non-overlapping within the same window.
+- **Crosby task contract**: Every task states `Parallel: allowed|sequential`, `File scope: repository-relative paths only`, and `Verification`: commands or `none`. Use `Verification: none` only for documentation-only/copy-only work.
 - **Window N**: Execution context boundary (fresh 200k context window)
 - **WINDOW_CHECKPOINT**: Validation gate before next window
 - **Traceability**: Each task traces back to spec (FR-XXX, AC-XXX, US-X)
@@ -235,9 +245,12 @@ In Pi:
 
 ---
 
-### T001 [P] Create database migration for execution_notes table
+### T001 Create database migration for execution_notes table
 
 **Window**: 1 (Foundation)
+**Parallel**: sequential
+**File scope**: `api/prisma/migrations/{DATE}_create_execution_notes/migration.sql`
+**Verification**: `npm run migrate:dev`
 **Phase**: Database
 **Traceability**: FR-001 (System MUST persist notes)
 **Dependencies**: None
@@ -263,9 +276,12 @@ npm run migrate:dev
 
 ---
 
-### T002 [P] Add ExecutionNote model to schema.prisma
+### T002 Add ExecutionNote model to schema.prisma
 
 **Window**: 1 (Foundation)
+**Parallel**: sequential
+**File scope**: `api/prisma/schema.prisma`
+**Verification**: `npx prisma generate`
 **Phase**: Models
 **Traceability**: FR-001 (System MUST persist notes)
 **Dependencies**: T001 (migration file created, defines schema)
@@ -290,6 +306,9 @@ npx prisma generate
 ### T003 Create ExecutionNoteRepository (scoped to userId)
 
 **Window**: 1 (Foundation)
+**Parallel**: sequential
+**File scope**: `api/src/repositories/execution-note-repository.ts`, `api/src/repositories/__tests__/execution-note-repository.test.ts`
+**Verification**: `npm test -- execution-note-repository.test.ts`
 **Phase**: Repository (Backend Authority, Principle VI)
 **Traceability**: FR-001, Principle VI (Backend Authority)
 **Dependencies**: T002 (model ready)
@@ -344,9 +363,12 @@ If any checkpoint fails, debug and fix within Window 1 (do NOT proceed).
 
 ---
 
-### T004 [P] Contract test for POST /sessions/:sessionId/notes
+### T004 Contract test for POST /sessions/:sessionId/notes
 
 **Window**: 2 (P1 - Create)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/contract/execution-notes.contract.test.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Tests (write FIRST, must fail before implementation)
 **Traceability**: AC-001 (Given athlete, When note submitted, Then 201)
 **Dependencies**: T003 (repository ready)
@@ -370,9 +392,12 @@ If any checkpoint fails, debug and fix within Window 1 (do NOT proceed).
 
 ---
 
-### T005 [P] Contract test for GET /sessions/:sessionId (modified response)
+### T005 Contract test for GET /sessions/:sessionId (modified response)
 
 **Window**: 2 (P1 - Read)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/contract/execution-notes.contract.test.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Tests (write FIRST, must fail before implementation)
 **Traceability**: AC-002 (When retrieve session, Then notes included)
 **Dependencies**: T003 (repository ready)
@@ -406,9 +431,12 @@ If any checkpoint fails, debug and fix within Window 1 (do NOT proceed).
 
 ---
 
-### T006 [P] Integration test for create → retrieve → verify flow
+### T006 Integration test for create → retrieve → verify flow
 
 **Window**: 2 (P1 - Integration)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/integration/execution-notes.integration.test.ts`
+**Verification**: `npm test -- execution-notes.integration.test.ts`
 **Phase**: Tests (write FIRST)
 **Traceability**: AC-003 (Complete flow validation)
 **Dependencies**: T003 (repository ready)
@@ -431,6 +459,9 @@ If any checkpoint fails, debug and fix within Window 1 (do NOT proceed).
 ### T007 Create POST /sessions/:sessionId/exercises/:exerciseId/notes route
 
 **Window**: 2 (P1 - Create Implementation)
+**Parallel**: sequential
+**File scope**: `api/src/routes/execution-notes.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Implementation (after tests fail)
 **Traceability**: AC-001 (201 on valid submission)
 **Dependencies**: T004, T006 (contract tests must exist and fail)
@@ -457,6 +488,9 @@ If any checkpoint fails, debug and fix within Window 1 (do NOT proceed).
 ### T008 Modify GET /sessions/:sessionId to include notes
 
 **Window**: 2 (P1 - Read Implementation)
+**Parallel**: sequential
+**File scope**: `api/src/routes/sessions.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Implementation (after tests fail)
 **Traceability**: AC-002 (Notes included in session response)
 **Dependencies**: T005, T006 (contract tests must exist and fail)
@@ -477,6 +511,9 @@ If any checkpoint fails, debug and fix within Window 1 (do NOT proceed).
 ### T009 Integrate routes and run integration test
 
 **Window**: 2 (P1 - Integration)
+**Parallel**: sequential
+**File scope**: `api/src/server.ts`, `api/src/__tests__/integration/execution-notes.integration.test.ts`
+**Verification**: `npm test -- execution-notes.integration.test.ts`
 **Phase**: Integration (after implementation)
 **Traceability**: AC-001, AC-002, AC-003 (full flow)
 **Dependencies**: T007, T008 (routes implemented)
@@ -523,9 +560,12 @@ If any fails, fix within Window 2 (do NOT proceed).
 
 ---
 
-### T010 [P] Contract test for PATCH /sessions/:sessionId/notes/:noteId
+### T010 Contract test for PATCH /sessions/:sessionId/notes/:noteId
 
 **Window**: 3 (P2 - Edit Tests)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/contract/execution-notes.contract.test.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Tests
 **Traceability**: AC-004 (Given logged note, When updated, Then 200 or 403)
 **Dependencies**: T003 (repository ready)
@@ -542,9 +582,12 @@ If any fails, fix within Window 2 (do NOT proceed).
 
 ---
 
-### T011 [P] Contract test for DELETE /sessions/:sessionId/notes/:noteId
+### T011 Contract test for DELETE /sessions/:sessionId/notes/:noteId
 
 **Window**: 3 (P2 - Delete Tests)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/contract/execution-notes.contract.test.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Tests
 **Traceability**: AC-005 (Given logged note, When deleted, Then 204 or 403)
 **Dependencies**: T003 (repository ready)
@@ -564,6 +607,9 @@ If any fails, fix within Window 2 (do NOT proceed).
 ### T012 Create PATCH route with ownership verification
 
 **Window**: 3 (P2 - Edit Implementation)
+**Parallel**: sequential
+**File scope**: `api/src/routes/execution-notes.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Implementation (after tests fail)
 **Traceability**: AC-004 (Update with ownership check)
 **Dependencies**: T010 (contract test must exist and fail)
@@ -586,6 +632,9 @@ If any fails, fix within Window 2 (do NOT proceed).
 ### T013 Create DELETE route with ownership verification
 
 **Window**: 3 (P2 - Delete Implementation)
+**Parallel**: sequential
+**File scope**: `api/src/routes/execution-notes.ts`
+**Verification**: `npm test -- execution-notes.contract.test.ts`
 **Phase**: Implementation (after tests fail)
 **Traceability**: AC-005 (Delete with ownership check)
 **Dependencies**: T011 (contract test must exist and fail)
@@ -605,9 +654,12 @@ If any fails, fix within Window 2 (do NOT proceed).
 
 ---
 
-### T014 [P] Integration test for edit → delete flow
+### T014 Integration test for edit → delete flow
 
 **Window**: 3 (P2 - Integration)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/integration/execution-notes.integration.test.ts`
+**Verification**: `npm test -- execution-notes.integration.test.ts`
 **Phase**: Integration (after implementation)
 **Traceability**: AC-004, AC-005 (full flow)
 **Dependencies**: T012, T013 (routes implemented)
@@ -658,6 +710,9 @@ If any fails, fix within Window 3 (do NOT proceed).
 ### T015 Update API documentation with execution notes examples
 
 **Window**: 4 (Polish)
+**Parallel**: sequential
+**File scope**: `docs/API.md`
+**Verification**: none (documentation-only work)
 **Phase**: Documentation
 **Traceability**: All features (user-facing docs)
 **Dependencies**: T009, T014 (feature complete)
@@ -677,9 +732,12 @@ If any fails, fix within Window 3 (do NOT proceed).
 
 ---
 
-### T016 Code cleanup and refactoring
+### T016 Code cleanup and refactorings
 
 **Window**: 4 (Polish)
+**Parallel**: sequential
+**File scope**: `api/src/repositories/execution-note-repository.ts`, `api/src/routes/execution-notes.ts`, `api/src/routes/sessions.ts`
+**Verification**: `npm run lint && npm test`
 **Phase**: Refactoring
 **Traceability**: All (quality)
 **Dependencies**: T014 (feature complete)
@@ -699,6 +757,9 @@ If any fails, fix within Window 3 (do NOT proceed).
 ### T017 Final validation: Run all feature tests
 
 **Window**: 4 (Polish)
+**Parallel**: sequential
+**File scope**: `api/src/__tests__/contract/execution-notes.contract.test.ts`, `api/src/__tests__/integration/execution-notes.integration.test.ts`
+**Verification**: `npm test -- execution-notes && npm run lint`
 **Phase**: Validation
 **Traceability**: All AC (final check)
 **Dependencies**: T015, T016 (cleanup complete)
@@ -778,6 +839,11 @@ npm run lint
 - Implement skill reads STATE.md, not chat memory
 - Can restart any window without losing prior work
 
+### Rule 6: Parallel Contract Safety
+- `[P]` is shorthand for `Parallel: allowed`, not an assumption based only on different files.
+- Every task must publish explicit blockers, `File scope` entries that are repository-relative and narrow, and `Verification` commands or justified `none`.
+- A task is sequential whenever its blockers are unresolved, its scope overlaps a potential peer, or its metadata is incomplete/ambiguous.
+
 ---
 
 ## Checklist Before Implement Phase
@@ -785,7 +851,10 @@ npm run lint
 - [ ] All windows created and sequenced
 - [ ] Tasks logically organized within windows
 - [ ] Dependencies documented
-- [ ] Parallel opportunities marked [P]
+- [ ] Parallel opportunities marked [P] only where the full task contract permits them
+- [ ] Every task declares `Parallel: allowed|sequential`, repository-relative `File scope`, and `Verification` commands or justified `none`
+- [ ] `[P]` tasks have explicit, resolved blockers and non-overlapping file scopes
+- [ ] Absolute, drive-qualified, root, glob-only, and whole-repository scopes were rejected or flagged
 - [ ] Traceability to spec established (every task → FR/AC)
 - [ ] Test-first tasks precede implementation tasks
 - [ ] Checkpoints clearly defined (what validates completion?)
