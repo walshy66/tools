@@ -2,6 +2,16 @@ import path from "node:path";
 import { createManagedRepository, createParentWorktree, createTaskWorktree } from "./managed-git.mjs";
 import { createRegistryStore, readRegistry, recordWorkerRecovery, updateWorkerRecord } from "./registry.mjs";
 import { validateWorkerReport } from "./worker-protocol.mjs";
+import { parseTaskContract, scopesOverlap } from "./task-contract.mjs";
+import {
+  collectChangedPaths,
+  retainTaskFailure,
+  runTaskVerification,
+  safeCommit,
+  serializedMerge,
+  validateChangedPaths,
+} from "./managed-git.mjs";
+import { validateProjectConfig } from "./project-config.mjs";
 
 export class VisibleWorkerLaunchError extends Error {
   constructor(message) {
@@ -44,6 +54,118 @@ function activeWorker(worker) {
 
 function describe(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function hasUnresolvedBlockers(child) {
+  return (Array.isArray(child?.relations?.blockedBy) ? child.relations.blockedBy : []).some((issue) => issue?.state?.name !== "Done");
+}
+
+function isReadyToBuild(child) {
+  return /^(?:ready to build|build ready)$/i.test(String(child?.state?.name ?? ""));
+}
+
+function contractFor(child) {
+  try {
+    return parseTaskContract(child?.description);
+  } catch {
+    return null;
+  }
+}
+
+function canShareRepository(candidate, selected) {
+  const peers = selected.filter((entry) => entry.repositoryIdentity === candidate.repositoryIdentity);
+  if (peers.length === 0) return true;
+  if (candidate.contract?.parallel !== "allowed") return false;
+  return peers.every((peer) => peer.contract?.parallel === "allowed" && !scopesOverlap(candidate.contract.fileScopes, peer.contract.fileScopes));
+}
+
+/**
+ * Selects at most the remaining global worker slots. Manual queues sort ahead of
+ * watch queues; tasks in the same repository may share capacity only with
+ * explicit, disjoint parallel contracts. Invalid declared metadata is ineligible.
+ */
+export function selectGlobalWorkerCandidates({ queues = [], activeWorkers = [], capacity = 2 } = {}) {
+  const active = Array.isArray(activeWorkers) ? activeWorkers : [];
+  const available = Math.max(0, Number(capacity) - active.length);
+  if (available === 0) return [];
+
+  const occupied = active
+    .filter((worker) => worker?.repositoryIdentity && worker?.contract)
+    .map((worker) => ({ repositoryIdentity: worker.repositoryIdentity, contract: worker.contract }));
+  const candidates = (Array.isArray(queues) ? queues : [])
+    .flatMap((queue) =>
+      (Array.isArray(queue?.children) ? queue.children : []).map((child) => ({
+        ...queue,
+        child,
+        contract: contractFor(child),
+      })),
+    )
+    .filter((entry) => isReadyToBuild(entry.child) && !hasUnresolvedBlockers(entry.child) && entry.contract)
+    .sort((left, right) => {
+      const source = Number(right.source === "manual") - Number(left.source === "manual");
+      if (source !== 0) return source;
+      return String(left.child.identifier).localeCompare(String(right.child.identifier), undefined, { numeric: true });
+    });
+
+  const selected = [];
+  for (const candidate of candidates) {
+    if (selected.length >= available) break;
+    const repositoryIdentity = candidate.repositoryIdentity ?? candidate.parent?.identifier;
+    const comparable = [...occupied, ...selected];
+    const normalized = { ...candidate, repositoryIdentity };
+    if (!canShareRepository(normalized, comparable)) continue;
+    selected.push(normalized);
+  }
+  return selected;
+}
+
+/**
+ * Runs the non-bypassable integration gate for a reported task. Failures retain
+ * the task evidence and return a review outcome; callers must not mark Done.
+ */
+export async function integrateWorkerReport({ parent, child, worker, report, operations = {} } = {}) {
+  const task = worker?.task;
+  let contract;
+  const dependencies = {
+    collectChangedPaths: operations.collectChangedPaths ?? collectChangedPaths,
+    validateChangedPaths: operations.validateChangedPaths ?? validateChangedPaths,
+    runTaskVerification: operations.runTaskVerification ?? runTaskVerification,
+    safeCommit: operations.safeCommit ?? safeCommit,
+    serializedMerge: operations.serializedMerge ?? serializedMerge,
+  };
+
+  try {
+    contract = parseTaskContract(child?.description);
+    validateWorkerReport(report);
+    if (report.outcome !== "complete") throw new VisibleWorkerReportError(`Worker ${child?.identifier ?? "task"} reported a block instead of completion.`);
+    if (!task?.path || !task?.branch || !task?.baseSha) throw new VisibleWorkerLaunchError(`Task worktree for ${child?.identifier ?? "task"} is incomplete.`);
+    const changedPaths = await dependencies.collectChangedPaths({ cwd: task.path, baseSha: task.baseSha });
+    if (contract.kind === "declared") dependencies.validateChangedPaths(changedPaths, contract.fileScopes);
+    const verification = contract.kind === "declared"
+      ? await dependencies.runTaskVerification({ cwd: task.path, verification: contract.verification })
+      : { skipped: true, results: [] };
+    const commit = await dependencies.safeCommit({ cwd: task.path, message: `feat(${child.identifier.toLowerCase()}): complete Crosby task` });
+    const merge = await dependencies.serializedMerge({
+      parentWorktreePath: parent?.integrationWorktree ?? parent?.worktree?.path,
+      taskBranch: task.branch,
+      message: `Merge ${task.branch} for ${child.identifier}`,
+    });
+    return { outcome: "done", changedPaths, verification, commit, merge, contract };
+  } catch (error) {
+    const reason = describe(error);
+    return {
+      outcome: "review",
+      summary: reason,
+      retained: retainTaskFailure({ task, reason }),
+      contract,
+    };
+  }
+}
+
+export async function runFinalIntegrationChecks({ parentWorktreePath, config, operations = {} } = {}) {
+  const validated = validateProjectConfig(config);
+  const runVerification = operations.runTaskVerification ?? runTaskVerification;
+  return runVerification({ cwd: text(parentWorktreePath, "parent integration worktree"), verification: validated.finalIntegrationCommands });
 }
 
 export function workerReportToExecutionResult(report, child) {
@@ -91,7 +213,9 @@ export function createVisibleWorkerScheduler(options = {}) {
   };
 
   async function prepareTask({ store, parent, child, sourcePath, repositoryIdentity, existing }) {
-    if (existing?.task?.path && existing?.task?.branch && existing?.task?.baseSha) return existing.task;
+    if (existing?.task?.path && existing?.task?.branch && existing?.task?.baseSha && existing?.parentWorktree?.path) {
+      return { task: existing.task, parentWorktree: existing.parentWorktree };
+    }
 
     const managedRepository = await dependencies.createManagedRepository({
       root: path.join(registryRoot, "managed"),
@@ -103,13 +227,14 @@ export function createVisibleWorkerScheduler(options = {}) {
       parentKey: text(parent?.identifier, "parent issue key"),
       parentBranch: text(parent?.branchName, "parent branch"),
     });
-    return dependencies.createTaskWorktree({
+    const task = await dependencies.createTaskWorktree({
       managedRepository,
       parentKey: text(parent?.identifier, "parent issue key"),
       childKey: text(child?.identifier, "child issue key"),
       taskBranch: taskBranch(parentWorktree.branch, child.identifier),
       baseRef: parentWorktree.branch,
     });
+    return { task, parentWorktree };
   }
 
   async function persistLaunchFailure(store, childKey, worker, error, tab) {
@@ -224,11 +349,12 @@ export function createVisibleWorkerScheduler(options = {}) {
         }
       }
 
-      const task = await prepareTask({ store, parent, child, sourcePath, repositoryIdentity, existing });
+      const prepared = await prepareTask({ store, parent, child, sourcePath, repositoryIdentity, existing });
       const worker = {
         ...existing,
         lifecycle: "launching",
-        task,
+        task: prepared.task,
+        parentWorktree: prepared.parentWorktree,
         attemptCount: Number(existing?.attemptCount ?? 0),
       };
       await dependencies.updateWorkerRecord(store, childKey, worker);

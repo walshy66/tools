@@ -5,6 +5,9 @@ import {
   VisibleWorkerLaunchError,
   VisibleWorkerRecoveryError,
   workerReportToExecutionResult,
+  selectGlobalWorkerCandidates,
+  integrateWorkerReport,
+  runFinalIntegrationChecks,
 } from "./scheduler.mjs";
 
 function harness({ existingWorker, inspectError, startError, promptError } = {}) {
@@ -111,6 +114,7 @@ test("claims a task, creates a visible tab, starts Pi, and persists Herdr identi
     lifecycle: "running",
     attemptCount: 1,
     task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    parentWorktree: { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
   });
   assert.deepEqual(calls.slice(-3), [
@@ -200,6 +204,88 @@ test("requires review when the one same-worktree recovery cannot start", async (
 
   assert.equal(registry.workers["COA-365"].lifecycle, "review-required");
   assert.match(registry.workers["COA-365"].recoveryNotes.at(-1), /second recovery failure/i);
+});
+
+test("global scheduling caps workers at two, prioritizes manual parents, and rejects overlapping scopes", () => {
+  const selection = selectGlobalWorkerCandidates({
+    queues: [
+      {
+        source: "watch",
+        repositoryIdentity: "repo",
+        parent: { identifier: "COA-360" },
+        children: [
+          { identifier: "COA-362", state: { name: "Ready to Build" }, description: "## Crosby execution\n\n- Parallel: allowed\n- File scope:\n  - `src/a.ts`\n- Verification: `node --test`" },
+          { identifier: "COA-363", state: { name: "Ready to Build" }, description: "## Crosby execution\n\n- Parallel: allowed\n- File scope:\n  - `src/a.ts`\n- Verification: `node --test`" },
+        ],
+      },
+      {
+        source: "manual",
+        repositoryIdentity: "other-repo",
+        parent: { identifier: "COA-361" },
+        children: [
+          { identifier: "COA-364", state: { name: "Ready to Build" }, description: "## Crosby execution\n\n- Parallel: allowed\n- File scope:\n  - `src/b.ts`\n- Verification: `node --test`" },
+          { identifier: "COA-365", state: { name: "Ready to Build" }, description: "No declared contract." },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(selection.map((entry) => entry.child.identifier), ["COA-364", "COA-362"]);
+});
+
+test("integration validates scope and verification before serially merging", async () => {
+  const calls = [];
+  const result = await integrateWorkerReport({
+    child: { identifier: "COA-365", description: "## Crosby execution\n\n- Parallel: sequential\n- File scope:\n  - `in-scope.txt`\n- Verification: `node --test`" },
+    worker: { task: { path: "/task", branch: "task-branch", baseSha: "base" } },
+    parent: { integrationWorktree: "/parent" },
+    report: { outcome: "complete", taskOutcome: "done", summary: "Done", changes: { paths: ["in-scope.txt"], commit: "abc" }, verification: [{ command: "node --test", result: "passed" }], risks: [] },
+    operations: {
+      collectChangedPaths: async () => ["in-scope.txt"],
+      validateChangedPaths: (paths, scopes) => { calls.push(["scope", paths, scopes]); return { valid: true }; },
+      runTaskVerification: async () => { calls.push(["verify"]); return { skipped: false, results: [] }; },
+      safeCommit: async () => ({ committed: false, sha: "abc" }),
+      serializedMerge: async () => { calls.push(["merge"]); return { merged: true, sha: "merged" }; },
+    },
+  });
+
+  assert.equal(result.outcome, "done");
+  assert.deepEqual(calls.map(([name]) => name), ["scope", "verify", "merge"]);
+});
+
+test("scope violations retain the task worktree for review instead of reporting Done", async () => {
+  const result = await integrateWorkerReport({
+    child: { identifier: "COA-365", description: "## Crosby execution\n\n- Parallel: sequential\n- File scope:\n  - `in-scope.txt`\n- Verification: `node --test`" },
+    worker: { task: { path: "/task", branch: "task-branch", baseSha: "base" } },
+    parent: { integrationWorktree: "/parent" },
+    report: { outcome: "complete", taskOutcome: "done", summary: "Done", changes: { paths: ["outside.txt"], commit: "abc" }, verification: [{ command: "node --test", result: "passed" }], risks: [] },
+    operations: {
+      collectChangedPaths: async () => ["outside.txt"],
+      validateChangedPaths: () => { throw new Error("outside declared scope"); },
+    },
+  });
+
+  assert.equal(result.outcome, "review");
+  assert.equal(result.retained.taskWorktreePath, "/task");
+  assert.match(result.summary, /outside declared scope/);
+});
+
+test("final integration checks run in order and fail closed", async () => {
+  const calls = [];
+  await assert.rejects(
+    () => runFinalIntegrationChecks({
+      parentWorktreePath: "/parent",
+      config: { version: 1, finalIntegrationCommands: ["first", "second"] },
+      operations: {
+        runTaskVerification: async ({ cwd, verification }) => {
+          calls.push([cwd, verification]);
+          throw new Error("second check failed");
+        },
+      },
+    }),
+    /second check failed/,
+  );
+  assert.deepEqual(calls, [["/parent", ["first", "second"]]]);
 });
 
 test("reuses the recorded task worktree once, then retains evidence for review after a second recovery failure", async () => {

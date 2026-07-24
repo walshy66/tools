@@ -12,7 +12,14 @@ import {
   runWatchMode,
 } from "./lib-v2.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
-import { createVisibleWorkerScheduler, VisibleWorkerRecoveryError, VisibleWorkerReportError, workerReportToExecutionResult } from "./scheduler.mjs";
+import {
+  createVisibleWorkerScheduler,
+  integrateWorkerReport,
+  VisibleWorkerRecoveryError,
+  VisibleWorkerReportError,
+  workerReportToExecutionResult,
+} from "./scheduler.mjs";
+import { buildChildIntegrationComment, buildParentIntegrationComment } from "./linear-reporting.mjs";
 
 function getLinearInvocation(args: string[]) {
   const configured = process.env.LINEAR_BIN?.trim();
@@ -459,6 +466,31 @@ function appendWorkerTranscript(pi: ExtensionAPI, event: any) {
   });
 }
 
+async function reportIntegrationToLinear(pi: ExtensionAPI, event: any) {
+  const integration = event?.workerResult?.integration;
+  if (!integration) return;
+  const child = event.child;
+  const childBody = buildChildIntegrationComment({
+    child,
+    outcome: integration.outcome,
+    summary: event.workerResult?.summary,
+    changedPaths: integration.changedPaths,
+    verification: integration.verification,
+    merge: integration.merge,
+    retained: integration.retained,
+  });
+  await addIssueComment(pi, child.identifier, childBody);
+  await addIssueComment(
+    pi,
+    event.parent.identifier,
+    buildParentIntegrationComment({
+      child,
+      outcome: integration.outcome,
+      requiredHumanAction: event.workerResult?.requiredHumanAction,
+    }),
+  );
+}
+
 function herdrResult(payload: any, operation: string) {
   if (payload?.error) throw new Error(payload.error.message ?? `Herdr ${operation} failed.`);
   if (!payload?.result || typeof payload.result !== "object") throw new Error(`Herdr ${operation} returned no result.`);
@@ -540,7 +572,25 @@ async function runVisibleWorker(
     workspace,
   });
   const report = await scheduler.waitForReport(launched.worker);
-  return { code: 0, stdout: JSON.stringify(workerReportToExecutionResult(report, child)), stderr: "" };
+  const integration = await integrateWorkerReport({
+    parent: { integrationWorktree: launched.worker.parentWorktree?.path },
+    child,
+    worker: launched.worker,
+    report,
+  });
+  const execution = integration.outcome === "done"
+    ? workerReportToExecutionResult(report, child)
+    : {
+        issueKey: child.identifier,
+        issueTitle: child.title,
+        outcome: "review",
+        summary: integration.summary,
+        changes: [],
+        tests: [],
+        requiredHumanAction: "Inspect the retained task worktree and resolve the integration failure.",
+        recoveryNotes: integration.retained?.recoveryNotes ?? [],
+      };
+  return { code: 0, stdout: JSON.stringify({ ...execution, integration }), stderr: "" };
 }
 
 export default function crosbyExtension(pi: ExtensionAPI) {
@@ -581,11 +631,12 @@ export default function crosbyExtension(pi: ExtensionAPI) {
                   cwd: event.cwd ?? null,
                 });
               },
-              onExecutionFinish: (event) => {
+              onExecutionFinish: async (event) => {
                 const pathText = formatIssuePath(event.path);
                 ctx.ui.notify(`Crosby finished ${event.child?.identifier ?? "issue"}: ${event.workerResult?.outcome ?? "unknown"}.`, event.workerResult?.outcome === "fatal" ? "error" : "success");
                 appendWorkerTranscript(pi, event);
-              },
+                await reportIntegrationToLinear(pi, event);
+              }
             },
             {
               pollIntervalMs: 60000,
@@ -670,11 +721,12 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               cwd: event.cwd ?? null,
             });
           },
-          onExecutionFinish: (event) => {
+          onExecutionFinish: async (event) => {
             const pathText = formatIssuePath(event.path);
             ctx.ui.notify(`Crosby finished ${event.child?.identifier ?? "issue"}: ${event.workerResult?.outcome ?? "unknown"}.`, event.workerResult?.outcome === "fatal" ? "error" : "success");
             appendWorkerTranscript(pi, event);
-          },
+            await reportIntegrationToLinear(pi, event);
+          }
         });
 
         pi.appendEntry("crosby-queue-loaded", {
