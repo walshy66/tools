@@ -133,7 +133,7 @@ test("claims a task, creates a visible tab, starts Pi, and persists Herdr identi
         CROSBY_TASK_KEY: "COA-365",
       },
     }],
-    ["startPiAgent", { pane: "pane-365", name: "crosby-coa-365" }],
+    ["startPiAgent", { pane: "pane-365", name: "crosby-coa-365", agentArgs: ["--approve"] }],
     ["promptAgent", { agent: "crosby-coa-365", prompt: "Return the worker report.", wait: false }],
   ]);
 });

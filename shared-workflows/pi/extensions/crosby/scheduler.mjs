@@ -406,7 +406,7 @@ export function createVisibleWorkerScheduler(options = {}) {
           CROSBY_TASK_KEY: childKey,
         },
       });
-      const agent = await herdr.startPiAgent({ pane: tab.pane, name });
+      const agent = await herdr.startPiAgent({ pane: tab.pane, name, agentArgs: ["--approve"] });
       const herdrRecord = { workspace: tab.workspace, tab: tab.tab, pane: agent.pane, agent: agent.name };
       worker = await dependencies.updateWorkerRecord(store, childKey, {
         ...worker,
