@@ -45,7 +45,7 @@ function workerName(childKey) {
 }
 
 function taskBranch(parentBranch, childKey) {
-  return `${text(parentBranch, "parent branch")}/${text(childKey, "child key").toLowerCase()}`;
+  return `${text(parentBranch, "parent branch")}-${text(childKey, "child key").toLowerCase()}`;
 }
 
 function activeWorker(worker) {

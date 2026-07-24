@@ -87,7 +87,7 @@ function harness({ existingWorker, inspectError, startError, promptError } = {})
     },
     createTaskWorktree: async (input) => {
       calls.push(["createTaskWorktree", input]);
-      return { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" };
+      return { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" };
     },
   });
   return { scheduler, registry, calls };
@@ -114,7 +114,7 @@ test("claims a task, creates a visible tab, starts Pi, and persists Herdr identi
   assert.deepEqual(registry.workers["COA-365"], {
     lifecycle: "running",
     attemptCount: 1,
-    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" },
     parentWorktree: { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
     registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
@@ -230,7 +230,7 @@ test("adopts an existing recorded Herdr worker after restart without launching a
   const existingWorker = {
     lifecycle: "running",
     attemptCount: 1,
-    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
   };
   const { scheduler, calls } = harness({ existingWorker });
@@ -246,7 +246,7 @@ test("reconciles a missing active agent through the bounded same-worktree recove
     lifecycle: "running",
     attemptCount: 1,
     recoveryAttempts: 0,
-    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" },
     parentWorktree: { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
     registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
@@ -265,7 +265,7 @@ test("requires review when the one same-worktree recovery cannot start", async (
     lifecycle: "running",
     attemptCount: 1,
     recoveryAttempts: 0,
-    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
   };
   const { scheduler, registry } = harness({
@@ -366,7 +366,7 @@ test("supervisor controls require confirmation for stop and cleanup while retain
   const existingWorker = {
     lifecycle: "running",
     attemptCount: 1,
-    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" },
     parentWorktree: { path: "/managed/COA-360/parent" },
     herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
   };
@@ -396,7 +396,7 @@ test("supervisor controls require confirmation for stop and cleanup while retain
     attempts: 1,
     recoveryAttempts: 0,
     agent: { name: "crosby-coa-365", state: "working" },
-    retained: { tab: "tab-365", worktree: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365" },
+    retained: { tab: "tab-365", worktree: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365" },
   });
   assert.equal((await supervisor.stop({ taskKey: "COA-365" })).requiresConfirmation, true);
   assert.equal(registry.workers["COA-365"].lifecycle, "running");
@@ -421,7 +421,7 @@ test("reuses the recorded task worktree once, then retains evidence for review a
     lifecycle: "running",
     attemptCount: 1,
     recoveryAttempts: 0,
-    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360-coa-365", baseSha: "task-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
   };
   const first = harness({ existingWorker, inspectError: new Error("agent missing") });
