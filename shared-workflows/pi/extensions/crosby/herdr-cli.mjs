@@ -52,7 +52,11 @@ export function createHerdrCliInvoker({ exec } = {}) {
       case "snapshot":
         return raw.snapshot;
       case "createTab":
-        return { workspace: raw.workspace ?? raw.workspace_id, tab: raw.tab ?? raw.tab_id, pane: raw.pane ?? raw.pane_id };
+        return {
+          workspace: raw.workspace ?? raw.workspace_id ?? raw.tab?.workspace_id ?? raw.root_pane?.workspace_id,
+          tab: raw.tab_id ?? raw.tab?.tab_id ?? raw.tab,
+          pane: raw.pane ?? raw.pane_id ?? raw.root_pane?.pane_id,
+        };
       case "closeTab":
         return { tab: raw.tab ?? raw.tab_id ?? input.tab };
       case "startAgent":
