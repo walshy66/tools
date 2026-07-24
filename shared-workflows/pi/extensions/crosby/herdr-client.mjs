@@ -68,6 +68,11 @@ export function createHerdrClient({ invoke } = {}) {
       };
     },
 
+    async closeTaskTab({ tab } = {}) {
+      const response = object(await call("closeTab", { tab: text(tab, "tab") }), "closeTab");
+      return { tab: text(response.tab, "Herdr closeTab response tab") };
+    },
+
     async startPiAgent({ pane, name, agentArgs } = {}) {
       const input = { pane: text(pane, "pane"), kind: "pi" };
       if (name !== undefined) input.name = text(name, "name");

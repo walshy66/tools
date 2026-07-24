@@ -34,6 +34,7 @@ test("creates a task tab without stealing focus and validates its root pane", as
 test("exposes validated agent control operations", async () => {
   const fake = fakeHerdr({
     snapshot: { workspaces: [] },
+    closeTab: { tab: "tab-1" },
     startAgent: { name: "coa-364", pane: "pane-1", state: "working" },
     promptAgent: { state: "working" },
     waitForAgent: { state: "idle" },
@@ -44,6 +45,7 @@ test("exposes validated agent control operations", async () => {
   const client = createHerdrClient({ invoke: fake.invoke });
 
   assert.deepEqual(await client.snapshot(), { workspaces: [] });
+  assert.deepEqual(await client.closeTaskTab({ tab: "tab-1" }), { tab: "tab-1" });
   assert.deepEqual(await client.startPiAgent({ pane: "pane-1", name: "coa-364" }), {
     name: "coa-364", pane: "pane-1", state: "working",
   });

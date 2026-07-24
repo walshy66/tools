@@ -312,8 +312,9 @@ export function buildRalphLoopPrompt(child) {
     "Preloaded issue snapshot:",
     serializedChild,
     "",
-    "Return JSON only with this schema:",
-    '{"issueKey":"ISSUE-KEY","issueTitle":"Issue title","outcome":"done|review|fatal","summary":"Concise summary","changes":["key change"],"tests":["test or verification run"],"requiredHumanAction":"Required for review/fatal outcomes","recoveryNotes":["Required for review/fatal outcomes"]}',
+    "Return only a Worker Report JSON object (no Markdown or surrounding text).",
+    "For completion: {\"outcome\":\"complete\",\"taskOutcome\":\"...\",\"summary\":\"...\",\"changes\":{\"paths\":[\"repo-relative/path\"],\"commit\":\"commit SHA\"},\"verification\":[{\"command\":\"...\",\"result\":\"passed|skipped\"}],\"risks\":[]}",
+    "For a human block: {\"outcome\":\"blocked\",\"summary\":\"...\",\"requiredHumanAction\":\"...\",\"recoveryNotes\":[\"...\"],\"requestHerdrBlocked\":true}",
   ].join("\n");
 }
 
@@ -956,6 +957,8 @@ export async function runSingleChildExecution(queue, operations) {
   const rawWorkerResult = await operations.runWorker({
     parentIssueKey: queue.parent.identifier,
     childIssueKey: child.identifier,
+    parent: queue.parent,
+    child,
     prompt: workerPrompt,
     cwd: routing?.cwd,
   });

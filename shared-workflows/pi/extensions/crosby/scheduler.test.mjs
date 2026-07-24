@@ -1,0 +1,225 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  createVisibleWorkerScheduler,
+  VisibleWorkerLaunchError,
+  VisibleWorkerRecoveryError,
+  workerReportToExecutionResult,
+} from "./scheduler.mjs";
+
+function harness({ existingWorker, inspectError, startError, promptError } = {}) {
+  const calls = [];
+  const registry = { workers: existingWorker ? { "COA-365": structuredClone(existingWorker) } : {} };
+  const store = { root: "/registry", repositoryIdentity: "repo", parentKey: "COA-360" };
+  const herdr = {
+    async inspectAgent({ agent }) {
+      calls.push(["inspectAgent", agent]);
+      if (inspectError) throw inspectError;
+      return { name: agent, state: "working" };
+    },
+    async createTaskTab(input) {
+      calls.push(["createTaskTab", input]);
+      return { workspace: input.workspace, tab: "tab-365", pane: "pane-365" };
+    },
+    async startPiAgent(input) {
+      calls.push(["startPiAgent", input]);
+      if (startError) throw startError;
+      return { name: input.name, pane: input.pane, state: "working" };
+    },
+    async promptAgent(input) {
+      calls.push(["promptAgent", input]);
+      if (promptError) throw promptError;
+      return { state: "working" };
+    },
+    async closeTaskTab(input) {
+      calls.push(["closeTaskTab", input]);
+      return { tab: input.tab };
+    },
+    async waitForAgent(input) {
+      calls.push(["waitForAgent", input]);
+      return { state: "done" };
+    },
+    async readAgent(input) {
+      calls.push(["readAgent", input]);
+      return {
+        text: JSON.stringify({
+          outcome: "complete",
+          taskOutcome: "done",
+          summary: "Completed work.",
+          changes: { paths: ["in-scope.txt"], commit: "abc123" },
+          verification: [{ command: "node --test", result: "passed" }],
+          risks: [],
+        }),
+      };
+    },
+  };
+  const scheduler = createVisibleWorkerScheduler({
+    registryRoot: "/registry",
+    herdr,
+    createRegistryStore: () => store,
+    readRegistry: async () => structuredClone(registry),
+    updateWorkerRecord: async (_store, key, patch) => {
+      registry.workers[key] = { ...(registry.workers[key] ?? {}), ...structuredClone(patch) };
+      return registry.workers[key];
+    },
+    recordWorkerRecovery: async (_store, key, note) => {
+      const worker = registry.workers[key];
+      if (worker.recoveryAttempts >= 1) throw new Error("one automatic same-worktree recovery");
+      registry.workers[key] = {
+        ...worker,
+        lifecycle: "launching",
+        recoveryAttempts: (worker.recoveryAttempts ?? 0) + 1,
+        recoveryNotes: [...(worker.recoveryNotes ?? []), note],
+      };
+      return registry.workers[key];
+    },
+    createManagedRepository: async (input) => {
+      calls.push(["createManagedRepository", input]);
+      return { barePath: "/managed/source.git" };
+    },
+    createParentWorktree: async (input) => {
+      calls.push(["createParentWorktree", input]);
+      return { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" };
+    },
+    createTaskWorktree: async (input) => {
+      calls.push(["createTaskWorktree", input]);
+      return { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" };
+    },
+  });
+  return { scheduler, registry, calls };
+}
+
+const parent = { identifier: "COA-360", branchName: "feature/coa-360" };
+const child = { identifier: "COA-365" };
+
+const launchInput = {
+  parent,
+  child,
+  prompt: "Return the worker report.",
+  sourcePath: "/project",
+  repositoryIdentity: "repo",
+  workspace: "workspace-1",
+};
+
+test("claims a task, creates a visible tab, starts Pi, and persists Herdr identifiers", async () => {
+  const { scheduler, registry, calls } = harness();
+
+  const result = await scheduler.launch(launchInput);
+
+  assert.equal(result.adopted, false);
+  assert.deepEqual(registry.workers["COA-365"], {
+    lifecycle: "running",
+    attemptCount: 1,
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
+  });
+  assert.deepEqual(calls.slice(-3), [
+    ["createTaskTab", { workspace: "workspace-1", label: "COA-365", cwd: "/managed/COA-360/tasks/COA-365", focus: false }],
+    ["startPiAgent", { pane: "pane-365", name: "crosby-coa-365" }],
+    ["promptAgent", { agent: "crosby-coa-365", prompt: "Return the worker report.", wait: false }],
+  ]);
+});
+
+test("closes a partially started worker and retains launch evidence when Herdr startup fails", async () => {
+  const { scheduler, registry, calls } = harness({ promptError: new Error("prompt failed") });
+
+  await assert.rejects(() => scheduler.launch(launchInput), VisibleWorkerLaunchError);
+
+  assert.deepEqual(calls.at(-1), ["closeTaskTab", { tab: "tab-365" }]);
+  assert.equal(registry.workers["COA-365"].lifecycle, "launch-failed");
+  assert.deepEqual(registry.workers["COA-365"].herdr, { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" });
+  assert.match(registry.workers["COA-365"].launchError, /prompt failed/);
+});
+
+test("waits for and validates the worker's explicit structured report", async () => {
+  const { scheduler, calls } = harness();
+
+  const report = await scheduler.waitForReport({ herdr: { agent: "crosby-coa-365" } });
+
+  assert.equal(report.outcome, "complete");
+  assert.deepEqual(calls, [
+    ["waitForAgent", { agent: "crosby-coa-365", until: ["idle", "done", "blocked"] }],
+    ["readAgent", { agent: "crosby-coa-365", lines: 2000 }],
+  ]);
+});
+
+test("maps explicit worker reports to the existing Crosby child outcome contract", () => {
+  const result = workerReportToExecutionResult(
+    {
+      outcome: "blocked",
+      summary: "Need a decision.",
+      requiredHumanAction: "Choose the migration path.",
+      recoveryNotes: ["Resume after the decision."],
+      requestHerdrBlocked: true,
+    },
+    { identifier: "COA-365", title: "Launch and recover a visible Herdr Crosby worker" },
+  );
+
+  assert.deepEqual(result, {
+    issueKey: "COA-365",
+    issueTitle: "Launch and recover a visible Herdr Crosby worker",
+    outcome: "review",
+    summary: "Need a decision.",
+    changes: [],
+    tests: [],
+    requiredHumanAction: "Choose the migration path.",
+    recoveryNotes: ["Resume after the decision."],
+  });
+});
+
+test("adopts an existing recorded Herdr worker after restart without launching a duplicate", async () => {
+  const existingWorker = {
+    lifecycle: "running",
+    attemptCount: 1,
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
+  };
+  const { scheduler, calls } = harness({ existingWorker });
+
+  const result = await scheduler.launch(launchInput);
+
+  assert.equal(result.adopted, true);
+  assert.deepEqual(calls, [["inspectAgent", "crosby-coa-365"]]);
+});
+
+test("requires review when the one same-worktree recovery cannot start", async () => {
+  const existingWorker = {
+    lifecycle: "running",
+    attemptCount: 1,
+    recoveryAttempts: 0,
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
+  };
+  const { scheduler, registry } = harness({
+    existingWorker,
+    inspectError: new Error("agent missing"),
+    promptError: new Error("recovery prompt failed"),
+  });
+
+  await assert.rejects(() => scheduler.launch(launchInput), VisibleWorkerRecoveryError);
+
+  assert.equal(registry.workers["COA-365"].lifecycle, "review-required");
+  assert.match(registry.workers["COA-365"].recoveryNotes.at(-1), /second recovery failure/i);
+});
+
+test("reuses the recorded task worktree once, then retains evidence for review after a second recovery failure", async () => {
+  const existingWorker = {
+    lifecycle: "running",
+    attemptCount: 1,
+    recoveryAttempts: 0,
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
+  };
+  const first = harness({ existingWorker, inspectError: new Error("agent missing") });
+
+  const recovered = await first.scheduler.launch(launchInput);
+
+  assert.equal(recovered.recovered, true);
+  assert.equal(first.registry.workers["COA-365"].recoveryAttempts, 1);
+  assert.equal(first.calls.some(([operation]) => operation === "createTaskWorktree"), false);
+
+  const second = harness({ existingWorker: first.registry.workers["COA-365"], inspectError: new Error("agent missing again") });
+  await assert.rejects(() => second.scheduler.launch(launchInput), VisibleWorkerRecoveryError);
+  assert.equal(second.registry.workers["COA-365"].lifecycle, "review-required");
+  assert.match(second.registry.workers["COA-365"].recoveryNotes.at(-1), /second recovery failure/i);
+});

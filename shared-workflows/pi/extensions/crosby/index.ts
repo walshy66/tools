@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import {
   fetchParentQueue,
@@ -10,6 +11,8 @@ import {
   runQueueExecution,
   runWatchMode,
 } from "./lib-v2.mjs";
+import { createHerdrClient } from "./herdr-client.mjs";
+import { createVisibleWorkerScheduler, VisibleWorkerRecoveryError, VisibleWorkerReportError, workerReportToExecutionResult } from "./scheduler.mjs";
 
 function getLinearInvocation(args: string[]) {
   const configured = process.env.LINEAR_BIN?.trim();
@@ -434,23 +437,6 @@ async function runClaudeReviewWorker(pi: ExtensionAPI, prompt: string, cwd: stri
   return result;
 }
 
-function getPiInvocation() {
-  const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-
-  if (currentScript && !isBunVirtualScript && existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript] };
-  }
-
-  const execName = path.basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) {
-    return { command: process.execPath, args: [] };
-  }
-
-  return { command: "pi", args: [] };
-}
-
 function formatIssuePath(path: any[] | undefined) {
   return (Array.isArray(path) ? path : [])
     .map((issue) => issue?.identifier)
@@ -473,24 +459,88 @@ function appendWorkerTranscript(pi: ExtensionAPI, event: any) {
   });
 }
 
-async function runIsolatedWorker(pi: ExtensionAPI, prompt: string, cwd?: string) {
-  const invocation = getPiInvocation();
-  const result = await pi.exec(
-    invocation.command,
-    [...invocation.args, "--mode", "text", "-p", "--no-session", prompt],
-    cwd ? { cwd } : undefined,
-  );
+function herdrResult(payload: any, operation: string) {
+  if (payload?.error) throw new Error(payload.error.message ?? `Herdr ${operation} failed.`);
+  if (!payload?.result || typeof payload.result !== "object") throw new Error(`Herdr ${operation} returned no result.`);
+  return payload.result;
+}
 
-  if (result.code !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(
-      details
-        ? `Isolated worker failed. ${details}`
-        : "Isolated worker failed before returning output.",
-    );
+async function invokeHerdrCli(pi: ExtensionAPI, operation: string, input: any) {
+  const argsByOperation: Record<string, string[]> = {
+    snapshot: ["api", "snapshot"],
+    createTab: ["tab", "create", "--workspace", input.workspace, "--label", input.label, "--cwd", input.cwd, input.focus ? "--focus" : "--no-focus"],
+    closeTab: ["tab", "close", input.tab],
+    startAgent: ["agent", "start", input.name, "--kind", "pi", "--pane", input.pane, ...(input.agentArgs?.length ? ["--", ...input.agentArgs] : [])],
+    promptAgent: ["agent", "prompt", input.agent, input.prompt, ...(input.wait ? ["--wait"] : [])],
+    waitForAgent: ["agent", "wait", input.agent, ...input.until.flatMap((state: string) => ["--until", state]), ...(input.timeout ? ["--timeout", String(input.timeout)] : [])],
+    readAgent: ["agent", "read", input.agent, ...(input.lines ? ["--lines", String(input.lines)] : [])],
+    renameAgent: ["agent", "rename", input.agent, input.name],
+    inspectAgent: ["agent", "get", input.agent],
+  };
+  const args = argsByOperation[operation];
+  if (!args) throw new Error(`Unsupported Herdr operation '${operation}'.`);
+
+  const result = await pi.exec("herdr", args);
+  const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+  if (result.code !== 0) throw new Error(details || `Herdr ${operation} failed with exit code ${result.code}.`);
+
+  let raw: any;
+  try {
+    raw = herdrResult(JSON.parse(result.stdout), operation);
+  } catch (error) {
+    throw new Error(`Could not parse Herdr ${operation} response: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const agent = raw.agent ?? raw;
 
-  return result;
+  switch (operation) {
+    case "snapshot":
+      return raw.snapshot;
+    case "createTab":
+      return { workspace: raw.workspace ?? raw.workspace_id, tab: raw.tab ?? raw.tab_id, pane: raw.pane ?? raw.pane_id };
+    case "closeTab":
+      return { tab: raw.tab ?? raw.tab_id ?? input.tab };
+    case "startAgent":
+      return { name: agent.name ?? agent.agent, pane: agent.pane ?? agent.pane_id, state: agent.state ?? agent.agent_status };
+    case "promptAgent":
+    case "waitForAgent":
+    case "renameAgent":
+    case "inspectAgent":
+      return { ...agent, name: agent.name ?? agent.agent, state: agent.state ?? agent.agent_status };
+    case "readAgent":
+      return { text: raw.text ?? raw.output ?? raw.content };
+    default:
+      return raw;
+  }
+}
+
+async function resolveRepositoryIdentity(pi: ExtensionAPI, cwd: string) {
+  const remote = await pi.exec("git", ["-C", cwd, "remote", "get-url", "origin"]);
+  return remote.code === 0 && remote.stdout.trim() ? remote.stdout.trim() : path.resolve(cwd);
+}
+
+async function runVisibleWorker(
+  pi: ExtensionAPI,
+  { parent, child, prompt, cwd }: { parent: any; child: any; prompt: string; cwd?: string },
+) {
+  const sourcePath = String(cwd ?? "").trim();
+  if (!sourcePath) throw new Error(`Cannot launch ${child?.identifier ?? "child"} because Crosby did not resolve its task repository.`);
+
+  const herdr = createHerdrClient({ invoke: (operation: string, input: any) => invokeHerdrCli(pi, operation, input) });
+  const snapshot = await herdr.snapshot();
+  const workspace = snapshot?.focused_workspace_id;
+  if (typeof workspace !== "string" || !workspace) throw new Error("Herdr has no focused launcher workspace. Recovery: focus the Crosby launcher workspace, then rerun /crosby.");
+
+  const scheduler = createVisibleWorkerScheduler({ registryRoot: path.join(homedir(), ".pi", "crosby"), herdr });
+  const launched = await scheduler.launch({
+    parent,
+    child,
+    prompt,
+    sourcePath,
+    repositoryIdentity: await resolveRepositoryIdentity(pi, sourcePath),
+    workspace,
+  });
+  const report = await scheduler.waitForReport(launched.worker);
+  return { code: 0, stdout: JSON.stringify(workerReportToExecutionResult(report, child)), stderr: "" };
 }
 
 export default function crosbyExtension(pi: ExtensionAPI) {
@@ -507,7 +557,16 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               fetchExecuteParentQueues: () => loadExecuteParentQueuesFromLinear(pi),
               moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
               addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-              runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
+              runWorker: async (input) => {
+                try {
+                  return await runVisibleWorker(pi, input);
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error);
+                  await moveIssue(pi, input.childIssueKey, error instanceof VisibleWorkerRecoveryError || error instanceof VisibleWorkerReportError ? "In Review" : "Ready to Build");
+                  ctx.ui.notify(message, "error");
+                  throw error;
+                }
+              },
               ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
               refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
               loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
@@ -587,7 +646,16 @@ export default function crosbyExtension(pi: ExtensionAPI) {
         const execution = await runQueueExecution(queue, {
           moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
           addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-          runWorker: ({ prompt, cwd }) => runIsolatedWorker(pi, prompt, cwd),
+          runWorker: async (input) => {
+            try {
+              return await runVisibleWorker(pi, input);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              await moveIssue(pi, input.childIssueKey, error instanceof VisibleWorkerRecoveryError || error instanceof VisibleWorkerReportError ? "In Review" : "Ready to Build");
+              ctx.ui.notify(message, "error");
+              throw error;
+            }
+          },
           ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
           refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
           loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
