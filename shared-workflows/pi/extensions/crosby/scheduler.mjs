@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createManagedRepository, createParentWorktree, createTaskWorktree } from "./managed-git.mjs";
-import { createRegistryStore, readRegistry, recordWorkerRecovery, updateWorkerRecord } from "./registry.mjs";
+import { createRegistryStore, listAllWorkers, readRegistry, recordWorkerRecovery, updateWorkerRecord } from "./registry.mjs";
 import { validateWorkerReport } from "./worker-protocol.mjs";
 import { parseTaskContract, scopesOverlap } from "./task-contract.mjs";
 import {
@@ -326,6 +326,7 @@ export function createVisibleWorkerScheduler(options = {}) {
 
   const dependencies = {
     createRegistryStore: options.createRegistryStore ?? createRegistryStore,
+    listAllWorkers: options.listAllWorkers ?? listAllWorkers,
     readRegistry: options.readRegistry ?? readRegistry,
     updateWorkerRecord: options.updateWorkerRecord ?? updateWorkerRecord,
     recordWorkerRecovery: options.recordWorkerRecovery ?? recordWorkerRecovery,
@@ -451,6 +452,68 @@ export function createVisibleWorkerScheduler(options = {}) {
   }
 
   return {
+    async listAllWorkers() {
+      return dependencies.listAllWorkers(registryRoot);
+    },
+
+    async reconcileWorker({ parent, child, prompt, sourcePath, repositoryIdentity, workspace } = {}) {
+      const parentKey = text(parent?.identifier, "parent issue key");
+      const childKey = text(child?.identifier, "child issue key");
+      const store = dependencies.createRegistryStore({
+        root: registryRoot,
+        repositoryIdentity: text(repositoryIdentity, "repository identity"),
+        parentKey,
+      });
+      const worker = (await dependencies.readRegistry(store)).workers?.[childKey];
+      if (!activeWorker(worker)) return worker ?? null;
+      try {
+        await herdr.inspectAgent({ agent: worker.herdr.agent });
+        return worker;
+      } catch {
+        return (await recover({ store, parent, child, prompt, workspace, worker })).worker;
+      }
+    },
+
+    async listWorkers({ repositoryIdentity, parentKey } = {}) {
+      const store = dependencies.createRegistryStore({
+        root: registryRoot,
+        repositoryIdentity: text(repositoryIdentity, "repository identity"),
+        parentKey: text(parentKey, "parent key"),
+      });
+      return Object.values((await dependencies.readRegistry(store)).workers ?? {}).sort((left, right) =>
+        String(left?.registry?.taskKey ?? "").localeCompare(String(right?.registry?.taskKey ?? ""), undefined, { numeric: true }),
+      );
+    },
+
+    async getWorkerReport(worker) {
+      const report = worker?.report;
+      if (report === undefined || report === null) return null;
+      return validateWorkerReport(report);
+    },
+
+    async markWorkerIntegrated(worker, integration) {
+      const repositoryIdentity = text(worker?.registry?.repositoryIdentity, "worker registry repository identity");
+      const parentKey = text(worker?.registry?.parentKey, "worker registry parent key");
+      const taskKey = text(worker?.registry?.taskKey, "worker registry task key");
+      const store = dependencies.createRegistryStore({ root: registryRoot, repositoryIdentity, parentKey });
+      return dependencies.updateWorkerRecord(store, taskKey, {
+        lifecycle: integration?.outcome === "done" ? "integrated" : "review-required",
+        integration,
+        integratedAt: new Date().toISOString(),
+      });
+    },
+
+    async markWorkerFinalized(worker) {
+      const repositoryIdentity = text(worker?.registry?.repositoryIdentity, "worker registry repository identity");
+      const parentKey = text(worker?.registry?.parentKey, "worker registry parent key");
+      const taskKey = text(worker?.registry?.taskKey, "worker registry task key");
+      const store = dependencies.createRegistryStore({ root: registryRoot, repositoryIdentity, parentKey });
+      return dependencies.updateWorkerRecord(store, taskKey, {
+        lifecycle: "finalized",
+        finalizedAt: new Date().toISOString(),
+      });
+    },
+
     async waitForReport(worker) {
       const agent = text(worker?.herdr?.agent, "recorded Herdr agent");
       const repositoryIdentity = text(worker?.registry?.repositoryIdentity, "worker registry repository identity");
@@ -481,12 +544,13 @@ export function createVisibleWorkerScheduler(options = {}) {
         parentKey,
         taskKey: childKey,
       };
+      const contract = parseTaskContract(child?.description);
 
       if (activeWorker(existing)) {
-        const recorded = { ...existing, registry: { ...workerRegistry, ...(existing.registry ?? {}) } };
+        const recorded = { ...existing, registry: { ...workerRegistry, ...(existing.registry ?? {}) }, contract: existing.contract ?? contract };
         try {
           await herdr.inspectAgent({ agent: recorded.herdr.agent });
-          const adopted = await dependencies.updateWorkerRecord(store, childKey, { lifecycle: "running", registry: recorded.registry, adoptedAt: new Date().toISOString() });
+          const adopted = await dependencies.updateWorkerRecord(store, childKey, { lifecycle: "running", registry: recorded.registry, contract: recorded.contract, adoptedAt: new Date().toISOString() });
           return { worker: adopted, adopted: true, recovered: false };
         } catch {
           return recover({ store, parent, child, prompt, workspace, worker: recorded });
@@ -500,6 +564,7 @@ export function createVisibleWorkerScheduler(options = {}) {
         task: prepared.task,
         parentWorktree: prepared.parentWorktree,
         registry: workerRegistry,
+        contract,
         attemptCount: Number(existing?.attemptCount ?? 0),
       };
       await dependencies.updateWorkerRecord(store, childKey, worker);

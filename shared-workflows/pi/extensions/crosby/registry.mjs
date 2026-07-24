@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const REGISTRY_VERSION = 1;
@@ -76,6 +76,46 @@ async function loadRegistry(store) {
 
 export async function readRegistry(store) {
   return loadRegistry(store);
+}
+
+/** Returns durable worker records across every readable Crosby registry. */
+export async function listAllWorkers(root) {
+  const registryRoot = requireText(root, "registry root");
+  const directory = path.join(registryRoot, "registries");
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    registryError(`Could not list registries in ${directory}.`);
+  }
+
+  const workers = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    let registry;
+    try {
+      registry = JSON.parse(await readFile(path.join(directory, entry.name), "utf8"));
+    } catch {
+      registryError(`Registry ${entry.name} is unreadable or contains invalid JSON.`);
+    }
+    if (registry?.version !== REGISTRY_VERSION || typeof registry?.repositoryIdentity !== "string" || typeof registry?.parentKey !== "string" || !registry?.workers || typeof registry.workers !== "object" || Array.isArray(registry.workers)) {
+      registryError(`Registry ${entry.name} has an invalid shape.`);
+    }
+    for (const [taskKey, worker] of Object.entries(registry.workers)) {
+      if (!worker || typeof worker !== "object" || Array.isArray(worker)) continue;
+      workers.push({
+        ...worker,
+        registry: {
+          repositoryIdentity: registry.repositoryIdentity,
+          parentKey: registry.parentKey,
+          taskKey,
+          ...(worker.registry ?? {}),
+        },
+      });
+    }
+  }
+  return workers;
 }
 
 async function staleLock(lockPath, staleLockMs) {

@@ -118,6 +118,7 @@ test("claims a task, creates a visible tab, starts Pi, and persists Herdr identi
     parentWorktree: { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
     registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
+    contract: { kind: "legacy", parallel: "sequential", fileScopes: [], verification: [] },
   });
   assert.deepEqual(calls.slice(-3), [
     ["createTaskTab", {
@@ -170,6 +171,37 @@ test("waits for and validates the worker's persisted structured report", async (
   assert.deepEqual(calls, [["waitForAgent", { agent: "crosby-coa-365", until: ["idle", "done", "blocked"] }]]);
 });
 
+test("lists durable workers and settles only explicitly reported workers", async () => {
+  const { scheduler, registry } = harness();
+  registry.workers["COA-365"] = {
+    lifecycle: "running",
+    registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
+  };
+  registry.workers["COA-366"] = {
+    lifecycle: "reported",
+    registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-366" },
+    report: {
+      outcome: "complete",
+      taskOutcome: "done",
+      summary: "Completed work.",
+      changes: { paths: ["in-scope.txt"], commit: "abc123" },
+      verification: [{ command: "node --test", result: "passed" }],
+      risks: [],
+    },
+  };
+
+  assert.deepEqual(
+    (await scheduler.listWorkers({ repositoryIdentity: "repo", parentKey: "COA-360" })).map((worker) => worker.registry.taskKey),
+    ["COA-365", "COA-366"],
+  );
+  assert.equal((await scheduler.getWorkerReport(registry.workers["COA-365"])), null);
+  assert.equal((await scheduler.getWorkerReport(registry.workers["COA-366"])).outcome, "complete");
+  await scheduler.markWorkerIntegrated(registry.workers["COA-366"], { outcome: "done" });
+  assert.equal(registry.workers["COA-366"].lifecycle, "integrated");
+  await scheduler.markWorkerFinalized(registry.workers["COA-366"]);
+  assert.equal(registry.workers["COA-366"].lifecycle, "finalized");
+});
+
 test("maps explicit worker reports to the existing Crosby child outcome contract", () => {
   const result = workerReportToExecutionResult(
     {
@@ -207,6 +239,25 @@ test("adopts an existing recorded Herdr worker after restart without launching a
 
   assert.equal(result.adopted, true);
   assert.deepEqual(calls, [["inspectAgent", "crosby-coa-365"]]);
+});
+
+test("reconciles a missing active agent through the bounded same-worktree recovery", async () => {
+  const existingWorker = {
+    lifecycle: "running",
+    attemptCount: 1,
+    recoveryAttempts: 0,
+    task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
+    parentWorktree: { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" },
+    herdr: { workspace: "workspace-1", tab: "tab-old", pane: "pane-old", agent: "crosby-coa-365" },
+    registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
+  };
+  const { scheduler, registry } = harness({ existingWorker, inspectError: new Error("agent missing") });
+
+  const worker = await scheduler.reconcileWorker(launchInput);
+
+  assert.equal(worker.lifecycle, "running");
+  assert.equal(registry.workers["COA-365"].recoveryAttempts, 1);
+  assert.equal(registry.workers["COA-365"].task.path, "/managed/COA-360/tasks/COA-365");
 });
 
 test("requires review when the one same-worktree recovery cannot start", async () => {

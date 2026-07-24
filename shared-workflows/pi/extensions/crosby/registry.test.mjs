@@ -11,6 +11,7 @@ import {
   updateRegistry,
   updateWorkerRecord,
   recordWorkerRecovery,
+  listAllWorkers,
 } from "./registry.mjs";
 
 async function temporaryStore() {
@@ -63,6 +64,18 @@ test("serializes concurrent updates without losing records", async () => {
   const registry = await readRegistry(store);
   assert.equal(Object.keys(registry.workers).length, 8);
   assert.equal(registry.workers["COA-7"].attemptCount, 7);
+});
+
+test("lists worker records across parent registries", async () => {
+  const first = await temporaryStore();
+  const second = createRegistryStore({ root: first.root, repositoryIdentity: "file:///other", parentKey: "COA-361" });
+  await updateWorkerRecord(first, "COA-363", { lifecycle: "running", registry: { taskKey: "COA-363" } });
+  await updateWorkerRecord(second, "COA-364", { lifecycle: "running", registry: { taskKey: "COA-364" } });
+
+  assert.deepEqual(
+    (await listAllWorkers(first.root)).map((worker) => worker.registry.taskKey).sort(),
+    ["COA-363", "COA-364"],
+  );
 });
 
 test("recovers a stale lock and records a single same-worktree recovery", async () => {

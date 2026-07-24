@@ -9,8 +9,6 @@ import {
   parseCrosbyCommandArgs,
   publishParentPullRequest,
   reviewParentPullRequest,
-  runQueueExecution,
-  runWatchMode,
   resolveIssueWorkingDirectory,
 } from "./lib-v2.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
@@ -21,10 +19,9 @@ import {
   createVisibleWorkerScheduler,
   integrateWorkerReport,
   runFinalIntegrationChecks,
-  VisibleWorkerRecoveryError,
-  VisibleWorkerReportError,
   workerReportToExecutionResult,
   createCrosbySupervisor,
+  selectGlobalWorkerCandidates,
 } from "./scheduler.mjs";
 import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment, buildSupervisorStatusReport } from "./linear-reporting.mjs";
 import { parseProjectConfig } from "./project-config.mjs";
@@ -516,46 +513,137 @@ async function resolveRepositoryIdentity(pi: ExtensionAPI, cwd: string) {
   return remote.code === 0 && remote.stdout.trim() ? remote.stdout.trim() : path.resolve(cwd);
 }
 
-async function runVisibleWorker(
-  pi: ExtensionAPI,
-  { parent, child, prompt, cwd }: { parent: any; child: any; prompt: string; cwd?: string },
-) {
-  const sourcePath = String(cwd ?? "").trim();
-  if (!sourcePath) throw new Error(`Cannot launch ${child?.identifier ?? "child"} because Crosby did not resolve its task repository.`);
-
+async function createVisibleRuntime(pi: ExtensionAPI) {
   const { workspace } = requireCrosbyHerdrContext();
   const invokeHerdrCli = createHerdrCliInvoker({ exec: (command: string, args: string[]) => pi.exec(command, args) });
   const herdr = createHerdrClient({ invoke: invokeHerdrCli });
-
-  const scheduler = createVisibleWorkerScheduler({ registryRoot: path.join(homedir(), ".pi", "crosby"), herdr });
-  const launched = await scheduler.launch({
-    parent,
-    child,
-    prompt,
-    sourcePath,
-    repositoryIdentity: await resolveRepositoryIdentity(pi, sourcePath),
+  return {
     workspace,
-  });
-  const report = await scheduler.waitForReport(launched.worker);
-  const integration = await integrateWorkerReport({
-    parent: { integrationWorktree: launched.worker.parentWorktree?.path },
-    child,
-    worker: launched.worker,
-    report,
-  });
-  const execution = integration.outcome === "done"
-    ? workerReportToExecutionResult(report, child)
-    : {
+    scheduler: createVisibleWorkerScheduler({ registryRoot: path.join(homedir(), ".pi", "crosby"), herdr }),
+  };
+}
+
+async function queueContext(pi: ExtensionAPI, queue: any, source: "manual" | "watch") {
+  const cwd = resolveIssueWorkingDirectory(queue.parent).cwd;
+  return { ...queue, source, cwd, repositoryIdentity: await resolveRepositoryIdentity(pi, cwd) };
+}
+
+function integrationExecution(report: any, integration: any, child: any) {
+  if (integration.outcome === "done" || report.outcome === "blocked") return workerReportToExecutionResult(report, child);
+  return {
+    issueKey: child.identifier,
+    issueTitle: child.title,
+    outcome: "review",
+    summary: integration.summary,
+    changes: [],
+    tests: [],
+    requiredHumanAction: "Inspect the retained task worktree and resolve the integration failure.",
+    recoveryNotes: integration.retained?.recoveryNotes ?? [],
+  };
+}
+
+async function reconcileVisibleQueue(pi: ExtensionAPI, runtime: any, context: any) {
+  let workers = await runtime.scheduler.listWorkers({ repositoryIdentity: context.repositoryIdentity, parentKey: context.parent.identifier });
+  for (const worker of workers) {
+    if (!["launching", "running", "recovering"].includes(worker.lifecycle)) continue;
+    const child = context.children.find((entry: any) => entry?.identifier === worker?.registry?.taskKey);
+    if (!child) continue;
+    await runtime.scheduler.reconcileWorker({
+      parent: context.parent,
+      child,
+      prompt: buildRalphLoopPrompt(child),
+      sourcePath: context.cwd,
+      repositoryIdentity: context.repositoryIdentity,
+      workspace: runtime.workspace,
+    });
+  }
+  workers = await runtime.scheduler.listWorkers({ repositoryIdentity: context.repositoryIdentity, parentKey: context.parent.identifier });
+  const settled = [];
+
+  for (const worker of workers) {
+    if (!["reported", "blocked", "integrated"].includes(worker.lifecycle)) continue;
+    const taskKey = worker?.registry?.taskKey;
+    const child = context.children.find((entry: any) => entry?.identifier === taskKey);
+    if (!child) continue;
+    const report = await runtime.scheduler.getWorkerReport(worker);
+    if (!report) continue;
+
+    const integration = worker.lifecycle === "integrated" && worker.integration
+      ? worker.integration
+      : await integrateWorkerReport({
+          parent: { integrationWorktree: worker.parentWorktree?.path },
+          child,
+          worker,
+          report,
+        });
+    const workerResult = integrationExecution(report, integration, child);
+    if (worker.lifecycle !== "integrated") await runtime.scheduler.markWorkerIntegrated(worker, integration);
+    await moveIssue(pi, child.identifier, workerResult.outcome === "done" ? "Done" : "In Review");
+    const event = { parent: context.parent, child, workerResult };
+    appendWorkerTranscript(pi, event);
+    await reportIntegrationToLinear(pi, event);
+    await runtime.scheduler.markWorkerFinalized(worker);
+    settled.push({ child, workerResult });
+  }
+
+  const refreshed = await fetchParentQueue(context.parent.identifier, (key) => loadIssueFromLinear(pi, key));
+  if (
+    !/^in review$/i.test(String(refreshed.parent?.state?.name ?? "")) &&
+    refreshed.children.length > 0 &&
+    refreshed.children.every((child: any) => /^done$/i.test(String(child?.state?.name ?? "")))
+  ) {
+    const completed = workers
+      .filter((worker: any) => worker.integration)
+      .map((worker: any) => ({ workerResult: { integration: worker.integration } }));
+    await finalizeParentIntegration(pi, refreshed, completed);
+  }
+  return settled;
+}
+
+async function launchVisibleCandidates(pi: ExtensionAPI, runtime: any, contexts: any[]) {
+  const activeWorkers = (await runtime.scheduler.listAllWorkers())
+    .filter((worker: any) => ["launching", "running", "recovering"].includes(worker.lifecycle))
+    .map((worker: any) => ({ repositoryIdentity: worker.registry?.repositoryIdentity, contract: worker.contract ?? { parallel: "sequential" } }));
+  const candidates = selectGlobalWorkerCandidates({ queues: contexts, activeWorkers, capacity: 2 });
+  const launched = [];
+
+  for (const candidate of candidates) {
+    const context = candidate;
+    const child = candidate.child;
+    await ensureParentBranch(pi, context.parent, context.cwd);
+    await moveIssue(pi, child.identifier, "Building");
+    try {
+      const result = await runtime.scheduler.launch({
+        parent: context.parent,
+        child,
+        prompt: buildRalphLoopPrompt(child),
+        sourcePath: context.cwd,
+        repositoryIdentity: context.repositoryIdentity,
+        workspace: runtime.workspace,
+      });
+      const event = { parent: context.parent, child, topLevelChild: child, path: [child], cwd: context.cwd };
+      pi.appendEntry("crosby-worker-started", {
+        parentIssueKey: context.parent.identifier,
+        topLevelIssueKey: child.identifier,
         issueKey: child.identifier,
-        issueTitle: child.title,
-        outcome: "review",
-        summary: integration.summary,
-        changes: [],
-        tests: [],
-        requiredHumanAction: "Inspect the retained task worktree and resolve the integration failure.",
-        recoveryNotes: integration.retained?.recoveryNotes ?? [],
-      };
-  return { code: 0, stdout: JSON.stringify({ ...execution, integration }), stderr: "" };
+        issuePath: child.identifier,
+        cwd: context.cwd,
+      });
+      launched.push({ child, result, event });
+    } catch (error) {
+      await moveIssue(pi, child.identifier, "Ready to Build");
+      throw error;
+    }
+  }
+  return launched;
+}
+
+async function runVisibleSchedulingCycle(pi: ExtensionAPI, runtime: any, queues: any[], source: "manual" | "watch") {
+  const contexts = await Promise.all(queues.map((queue) => queueContext(pi, queue, source)));
+  const settled = (await Promise.all(contexts.map((context) => reconcileVisibleQueue(pi, runtime, context)))).flat();
+  const refreshedContexts = await Promise.all(contexts.map(async (context) => queueContext(pi, await fetchParentQueue(context.parent.identifier, (key) => loadIssueFromLinear(pi, key)), source)));
+  const launched = await launchVisibleCandidates(pi, runtime, refreshedContexts);
+  return { settled, launched };
 }
 
 const supervisorTaskSchema = Type.Object({
@@ -720,66 +808,20 @@ export default function crosbyExtension(pi: ExtensionAPI) {
         const command = parseCrosbyCommandArgs(args);
 
         if (command.mode === "watch") {
-          ctx.ui.notify("Crosby watch mode started. Polling parent issues in Execute every 60s.", "success");
-          await runWatchMode(
-            {
-              fetchExecuteParentQueues: () => loadExecuteParentQueuesFromLinear(pi),
-              moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
-              addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-              runWorker: async (input) => {
-                try {
-                  return await runVisibleWorker(pi, input);
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error);
-                  await moveIssue(pi, input.childIssueKey, error instanceof VisibleWorkerRecoveryError || error instanceof VisibleWorkerReportError ? "In Review" : "Ready to Build");
-                  ctx.ui.notify(message, "error");
-                  throw error;
-                }
-              },
-              ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
-              refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
-              loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
-              runFinalIntegrationChecks: (queue, completedChildren) => finalizeParentIntegration(pi, queue, completedChildren),
-              finalizeParentCompletion: async () => {},
-              onExecutionStart: (event) => {
-                const pathText = formatIssuePath(event.path);
-                ctx.ui.notify(`Crosby starting ${event.child?.identifier ?? "issue"}${pathText ? ` (${pathText})` : ""}.`, "success");
-                pi.appendEntry("crosby-worker-started", {
-                  parentIssueKey: event.parent?.identifier ?? null,
-                  topLevelIssueKey: event.topLevelChild?.identifier ?? null,
-                  issueKey: event.child?.identifier ?? null,
-                  issuePath: pathText,
-                  cwd: event.cwd ?? null,
-                });
-              },
-              onExecutionFinish: async (event) => {
-                const pathText = formatIssuePath(event.path);
-                ctx.ui.notify(`Crosby finished ${event.child?.identifier ?? "issue"}: ${event.workerResult?.outcome ?? "unknown"}.`, event.workerResult?.outcome === "fatal" ? "error" : "success");
-                appendWorkerTranscript(pi, event);
-                await reportIntegrationToLinear(pi, event);
+          const runtime = await createVisibleRuntime(pi);
+          ctx.ui.notify("Crosby watch mode started. Reconciling and dispatching Herdr workers every 60s.", "success");
+          while (true) {
+            try {
+              const queues = await loadExecuteParentQueuesFromLinear(pi);
+              const cycle = await runVisibleSchedulingCycle(pi, runtime, queues, "watch");
+              if (cycle.settled.length || cycle.launched.length) {
+                ctx.ui.notify(`Crosby reconciled ${cycle.settled.length} and launched ${cycle.launched.length} worker(s).`, "success");
               }
-            },
-            {
-              pollIntervalMs: 60000,
-              onCycle: async (cycle) => {
-                for (const routingError of cycle.routingErrors ?? []) {
-                  ctx.ui.notify(routingError.message, "error");
-                }
-                if (cycle.status === "processed") {
-                  ctx.ui.notify(`Processed ${cycle.issue.identifier} under ${cycle.parent?.identifier ?? "the active parent"}.`, "success");
-                  return;
-                }
-                if (cycle.status === "fatal") {
-                  ctx.ui.notify(cycle.errorMessage ?? `Worker failed for ${cycle.issue?.identifier ?? "the active issue"}.`, "error");
-                  return;
-                }
-                if (cycle.status === "error") {
-                  ctx.ui.notify(cycle.errorMessage ?? "Crosby watch mode cycle failed.", "error");
-                }
-              },
-            },
-          );
-          return;
+            } catch (error) {
+              ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+            }
+            await new Promise((resolve) => setTimeout(resolve, 60000));
+          }
         }
 
         const issueKey = command.issueKey;
@@ -815,75 +857,21 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           return;
         }
 
-        const execution = await runQueueExecution(queue, {
-          moveIssue: (targetIssueKey, state) => moveIssue(pi, targetIssueKey, state),
-          addComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-          runWorker: async (input) => {
-            try {
-              return await runVisibleWorker(pi, input);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              await moveIssue(pi, input.childIssueKey, error instanceof VisibleWorkerRecoveryError || error instanceof VisibleWorkerReportError ? "In Review" : "Ready to Build");
-              ctx.ui.notify(message, "error");
-              throw error;
-            }
-          },
-          ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
-          refreshQueue: (parentIssueKey) => fetchParentQueue(parentIssueKey, (key) => loadIssueFromLinear(pi, key)),
-          loadIssue: (issueKey) => loadIssueFromLinear(pi, issueKey),
-          runFinalIntegrationChecks: (queue, completedChildren) => finalizeParentIntegration(pi, queue, completedChildren),
-          finalizeParentCompletion: async () => {},
-          onExecutionStart: (event) => {
-            const pathText = formatIssuePath(event.path);
-            ctx.ui.notify(`Crosby starting ${event.child?.identifier ?? "issue"}${pathText ? ` (${pathText})` : ""}.`, "success");
-            pi.appendEntry("crosby-worker-started", {
-              parentIssueKey: event.parent?.identifier ?? null,
-              topLevelIssueKey: event.topLevelChild?.identifier ?? null,
-              issueKey: event.child?.identifier ?? null,
-              issuePath: pathText,
-              cwd: event.cwd ?? null,
-            });
-          },
-          onExecutionFinish: async (event) => {
-            const pathText = formatIssuePath(event.path);
-            ctx.ui.notify(`Crosby finished ${event.child?.identifier ?? "issue"}: ${event.workerResult?.outcome ?? "unknown"}.`, event.workerResult?.outcome === "fatal" ? "error" : "success");
-            appendWorkerTranscript(pi, event);
-            await reportIntegrationToLinear(pi, event);
-          }
-        });
-
+        const runtime = await createVisibleRuntime(pi);
+        const cycle = await runVisibleSchedulingCycle(pi, runtime, [queue], "manual");
         pi.appendEntry("crosby-queue-loaded", {
           issueKey,
           parentTitle: queue.parent.title,
           childCount: queue.children.length,
           childKeys: queue.children.map((child) => child.identifier),
-          childStates: queue.children.map((child) => ({
-            issueKey: child.identifier,
-            stateName: child?.state?.name ?? null,
-            stateType: child?.state?.type ?? null,
-          })),
-          completedChildKeys: execution.completedChildren.map((entry) => entry.child.identifier),
-          completedChildOutcomes: execution.completedChildren.map((entry) => ({
-            issueKey: entry.child.identifier,
-            outcome: entry.workerResult.outcome,
-          })),
-          movedParentToBuilding: execution.movedParentToBuilding,
-          remainingByReason: execution.remainingByReason,
+          settledChildKeys: cycle.settled.map((entry) => entry.child.identifier),
+          launchedChildKeys: cycle.launched.map((entry) => entry.child.identifier),
           loadedAt: new Date().toISOString(),
         });
-
-        const lastExecution = execution.completedChildren.at(-1);
-        const parentTransition = execution.movedParentToBuilding ? ` Parent ${queue.parent.identifier} moved to Building.` : "";
-        const remaining = Object.keys(execution.remainingByReason).length
-          ? ` Remaining: ${JSON.stringify(execution.remainingByReason)}.`
-          : "";
-        const message =
-          !lastExecution
-            ? `No runnable child issues remain under ${queue.parent.identifier}.${remaining}`
-            : lastExecution.workerResult.outcome === "fatal"
-              ? `${lastExecution.child.identifier} returned fatal outcome after ${execution.completedChildren.length} child run(s). Recovery: ${lastExecution.workerResult.recoveryNotes.join(" ")}.${parentTransition}`
-              : `Processed ${execution.completedChildren.length} child issue(s) under ${queue.parent.identifier}.${parentTransition}${remaining}`;
-        ctx.ui.notify(message, lastExecution?.workerResult.outcome === "fatal" ? "error" : "success");
+        ctx.ui.notify(
+          `Crosby reconciled ${cycle.settled.length} and launched ${cycle.launched.length} worker(s) under ${queue.parent.identifier}.`,
+          "success",
+        );
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
