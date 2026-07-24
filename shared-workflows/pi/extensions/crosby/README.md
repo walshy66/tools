@@ -4,7 +4,7 @@ Crosby executes Linear child tasks in isolated, visible Herdr/Pi workers. It use
 
 ## Configure
 
-1. Install the extension and make `linear`, `git`, and `herdr` available to Pi.
+1. Install the extension and make `linear`, `git`, and `herdr` available to Pi. Run `/crosby` only from a Pi session inside Herdr; Crosby uses that caller's workspace and never the mutable UI-focused workspace.
 2. Add a folder label to the parent issue that resolves to the local repository (for example `tools-coa-360`). Crosby searches `C:\Users\camer\Documents\<label>` and `C:\Users\camer\Documents\projects\<label>`.
 3. Give the parent a Linear `branchName` and create AFK child tasks in `Ready to Build`.
 4. Add exactly one work-type label to every execution task (`wt:process-automation` for Crosby work).
@@ -44,7 +44,7 @@ Use `Parallel: allowed` only when file scopes are disjoint. The scheduler reject
 - `/crosby push COA-360` explicitly pushes the parent branch and creates or updates its PR.
 - `/crosby review COA-360` explicitly runs the Claude PR review.
 
-Crosby moves a selected child to `Build`, creates a visible Herdr tab, starts a Pi worker, and records the task worktree, branch, tab, pane, and agent in its local registry. A successful integration moves the child to `Done`; a recoverable integration or worker problem moves it to `In Review` with retained evidence. When every child is `Done`, it runs final integration commands, posts the consolidated parent report, and moves the parent to `In Review`.
+Crosby moves a selected child to `Build`, creates a visible Herdr tab, starts a Pi worker, and records the task worktree, branch, tab, pane, and agent in its local registry. The worker finishes through the `crosby_worker_report` tool, which validates and persists its completion or block report; a blocked report also marks the Herdr agent blocked. A successful integration moves the child to `Done`; a recoverable integration or worker problem moves it to `In Review` with retained evidence. When every child is `Done`, it runs final integration commands, posts the consolidated parent report, and moves the parent to `In Review`.
 
 ## Observe and control workers
 

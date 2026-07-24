@@ -53,13 +53,24 @@ export function createHerdrClient({ invoke } = {}) {
       return object(await call("snapshot", {}), "snapshot");
     },
 
-    async createTaskTab({ workspace, label, cwd, focus = false } = {}) {
+    async createTaskTab({ workspace, label, cwd, focus = false, env } = {}) {
       const input = {
         workspace: text(workspace, "workspace"),
         label: text(label, "label"),
         cwd: text(cwd, "cwd"),
         focus: focus === true,
       };
+      if (env !== undefined) {
+        if (!env || typeof env !== "object" || Array.isArray(env)) fail("env must be an object of environment variables.");
+        input.env = Object.fromEntries(
+          Object.entries(env).map(([key, value]) => {
+            if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) fail(`env key '${key}' is invalid.`);
+            const normalized = text(value, `env ${key}`);
+            if (/[\r\n\0]/.test(normalized)) fail(`env ${key} must not contain control characters.`);
+            return [key, normalized];
+          }),
+        );
+      }
       const response = object(await call("createTab", input), "createTab");
       return {
         workspace: text(response.workspace, "Herdr createTab response workspace"),
@@ -112,8 +123,11 @@ export function createHerdrClient({ invoke } = {}) {
       return responseWithState(await call("waitForAgent", input), "waitForAgent");
     },
 
-    async readAgent({ agent, lines } = {}) {
-      const input = { agent: text(agent, "agent") };
+    async readAgent({ agent, lines, source = "recent-unwrapped" } = {}) {
+      if (!["visible", "recent", "recent-unwrapped", "detection"].includes(source)) {
+        fail("source must be a supported Herdr read source.");
+      }
+      const input = { agent: text(agent, "agent"), source };
       if (lines !== undefined) {
         if (!Number.isInteger(lines) || lines < 1) fail("lines must be a positive integer.");
         input.lines = lines;

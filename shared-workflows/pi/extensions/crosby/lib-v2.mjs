@@ -291,8 +291,9 @@ export function buildRalphLoopPrompt(child) {
       "Preloaded issue snapshot:",
       serializedChild,
       "",
-      "Return JSON only with this schema for the container issue:",
-      '{"issueKey":"ISSUE-KEY","issueTitle":"Issue title","outcome":"done|review|fatal","summary":"Concise summary","changes":["key change"],"tests":["test or verification run"],"requiredHumanAction":"Required for review/fatal outcomes","recoveryNotes":["Required for review/fatal outcomes"]}',
+      "Finish by calling crosby_worker_report as your final action; do not print a terminal JSON response.",
+      "For completion, submit outcome complete with taskOutcome, summary, changed repository-relative paths plus commit, verification evidence, and risks.",
+      "For a human block, submit outcome blocked with requiredHumanAction, recoveryNotes, and requestHerdrBlocked: true.",
     ].join("\n");
   }
 
@@ -312,9 +313,9 @@ export function buildRalphLoopPrompt(child) {
     "Preloaded issue snapshot:",
     serializedChild,
     "",
-    "Return only a Worker Report JSON object (no Markdown or surrounding text).",
-    "For completion: {\"outcome\":\"complete\",\"taskOutcome\":\"...\",\"summary\":\"...\",\"changes\":{\"paths\":[\"repo-relative/path\"],\"commit\":\"commit SHA\"},\"verification\":[{\"command\":\"...\",\"result\":\"passed|skipped\"}],\"risks\":[]}",
-    "For a human block: {\"outcome\":\"blocked\",\"summary\":\"...\",\"requiredHumanAction\":\"...\",\"recoveryNotes\":[\"...\"],\"requestHerdrBlocked\":true}",
+    "Finish by calling crosby_worker_report as your final action; do not print a terminal JSON response.",
+    "For completion, submit outcome complete with taskOutcome, summary, changes.paths (repository-relative), changes.commit, verification entries, and risks.",
+    "For a human block, submit outcome blocked with requiredHumanAction, recoveryNotes, and requestHerdrBlocked: true."
   ].join("\n");
 }
 

@@ -14,6 +14,9 @@ import {
   resolveIssueWorkingDirectory,
 } from "./lib-v2.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
+import { createHerdrCliInvoker } from "./herdr-cli.mjs";
+import { requireCrosbyHerdrContext } from "./herdr-context.mjs";
+import { persistWorkerReport } from "./worker-report.mjs";
 import {
   createVisibleWorkerScheduler,
   integrateWorkerReport,
@@ -508,60 +511,6 @@ async function reportIntegrationToLinear(pi: ExtensionAPI, event: any) {
   );
 }
 
-function herdrResult(payload: any, operation: string) {
-  if (payload?.error) throw new Error(payload.error.message ?? `Herdr ${operation} failed.`);
-  if (!payload?.result || typeof payload.result !== "object") throw new Error(`Herdr ${operation} returned no result.`);
-  return payload.result;
-}
-
-async function invokeHerdrCli(pi: ExtensionAPI, operation: string, input: any) {
-  const argsByOperation: Record<string, string[]> = {
-    snapshot: ["api", "snapshot"],
-    createTab: ["tab", "create", "--workspace", input.workspace, "--label", input.label, "--cwd", input.cwd, input.focus ? "--focus" : "--no-focus"],
-    closeTab: ["tab", "close", input.tab],
-    startAgent: ["agent", "start", input.name, "--kind", "pi", "--pane", input.pane, ...(input.agentArgs?.length ? ["--", ...input.agentArgs] : [])],
-    promptAgent: ["agent", "prompt", input.agent, input.prompt, ...(input.wait ? ["--wait"] : [])],
-    waitForAgent: ["agent", "wait", input.agent, ...input.until.flatMap((state: string) => ["--until", state]), ...(input.timeout ? ["--timeout", String(input.timeout)] : [])],
-    readAgent: ["agent", "read", input.agent, ...(input.lines ? ["--lines", String(input.lines)] : [])],
-    renameAgent: ["agent", "rename", input.agent, input.name],
-    inspectAgent: ["agent", "get", input.agent],
-  };
-  const args = argsByOperation[operation];
-  if (!args) throw new Error(`Unsupported Herdr operation '${operation}'.`);
-
-  const result = await pi.exec("herdr", args);
-  const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-  if (result.code !== 0) throw new Error(details || `Herdr ${operation} failed with exit code ${result.code}.`);
-
-  let raw: any;
-  try {
-    raw = herdrResult(JSON.parse(result.stdout), operation);
-  } catch (error) {
-    throw new Error(`Could not parse Herdr ${operation} response: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const agent = raw.agent ?? raw;
-
-  switch (operation) {
-    case "snapshot":
-      return raw.snapshot;
-    case "createTab":
-      return { workspace: raw.workspace ?? raw.workspace_id, tab: raw.tab ?? raw.tab_id, pane: raw.pane ?? raw.pane_id };
-    case "closeTab":
-      return { tab: raw.tab ?? raw.tab_id ?? input.tab };
-    case "startAgent":
-      return { name: agent.name ?? agent.agent, pane: agent.pane ?? agent.pane_id, state: agent.state ?? agent.agent_status };
-    case "promptAgent":
-    case "waitForAgent":
-    case "renameAgent":
-    case "inspectAgent":
-      return { ...agent, name: agent.name ?? agent.agent, state: agent.state ?? agent.agent_status };
-    case "readAgent":
-      return { text: raw.text ?? raw.output ?? raw.content };
-    default:
-      return raw;
-  }
-}
-
 async function resolveRepositoryIdentity(pi: ExtensionAPI, cwd: string) {
   const remote = await pi.exec("git", ["-C", cwd, "remote", "get-url", "origin"]);
   return remote.code === 0 && remote.stdout.trim() ? remote.stdout.trim() : path.resolve(cwd);
@@ -574,10 +523,9 @@ async function runVisibleWorker(
   const sourcePath = String(cwd ?? "").trim();
   if (!sourcePath) throw new Error(`Cannot launch ${child?.identifier ?? "child"} because Crosby did not resolve its task repository.`);
 
-  const herdr = createHerdrClient({ invoke: (operation: string, input: any) => invokeHerdrCli(pi, operation, input) });
-  const snapshot = await herdr.snapshot();
-  const workspace = snapshot?.focused_workspace_id;
-  if (typeof workspace !== "string" || !workspace) throw new Error("Herdr has no focused launcher workspace. Recovery: focus the Crosby launcher workspace, then rerun /crosby.");
+  const { workspace } = requireCrosbyHerdrContext();
+  const invokeHerdrCli = createHerdrCliInvoker({ exec: (command: string, args: string[]) => pi.exec(command, args) });
+  const herdr = createHerdrClient({ invoke: invokeHerdrCli });
 
   const scheduler = createVisibleWorkerScheduler({ registryRoot: path.join(homedir(), ".pi", "crosby"), herdr });
   const launched = await scheduler.launch({
@@ -635,7 +583,9 @@ async function createSupervisorForTask(pi: ExtensionAPI, parentKey: string, task
   }
   const cwd = resolveIssueWorkingDirectory(queue.parent).cwd;
   const repositoryIdentity = await resolveRepositoryIdentity(pi, cwd);
-  const herdr = createHerdrClient({ invoke: (operation: string, input: any) => invokeHerdrCli(pi, operation, input) });
+  requireCrosbyHerdrContext();
+  const invokeHerdrCli = createHerdrCliInvoker({ exec: (command: string, args: string[]) => pi.exec(command, args) });
+  const herdr = createHerdrClient({ invoke: invokeHerdrCli });
   return createCrosbySupervisor({
     registryRoot: path.join(homedir(), ".pi", "crosby"),
     repositoryIdentity,
@@ -646,6 +596,51 @@ async function createSupervisorForTask(pi: ExtensionAPI, parentKey: string, task
       if (!taskPath) throw new Error("Recorded Crosby task has no managed worktree path to clean up.");
       const controlPath = String(worker?.parentWorktree?.path ?? cwd).trim();
       await execGit(pi, ["-C", controlPath, "worktree", "remove", "--force", taskPath], cwd);
+    },
+  });
+}
+
+const workerCompletionReportSchema = Type.Object({
+  outcome: Type.Literal("complete"),
+  taskOutcome: Type.String(),
+  summary: Type.String(),
+  changes: Type.Object({ paths: Type.Array(Type.String()), commit: Type.String() }),
+  verification: Type.Array(Type.Object({ command: Type.String(), result: Type.Union([Type.Literal("passed"), Type.Literal("skipped")]) })),
+  risks: Type.Array(Type.String()),
+});
+const workerBlockedReportSchema = Type.Object({
+  outcome: Type.Literal("blocked"),
+  summary: Type.String(),
+  requiredHumanAction: Type.String(),
+  recoveryNotes: Type.Array(Type.String()),
+  requestHerdrBlocked: Type.Literal(true),
+});
+
+function registerWorkerReportTool(pi: ExtensionAPI) {
+  const workerEnvironmentReady = ["CROSBY_REGISTRY_ROOT", "CROSBY_REPOSITORY_ID", "CROSBY_PARENT_KEY", "CROSBY_TASK_KEY"].every((name) => process.env[name]?.trim());
+  if (!workerEnvironmentReady) return;
+
+  pi.registerTool({
+    name: "crosby_worker_report",
+    label: "Crosby Worker Report",
+    description: "Submit the final validated completion or human-block report for this Crosby task. This is the worker's final action.",
+    promptSnippet: "Submit the final Crosby worker report",
+    promptGuidelines: ["Use crosby_worker_report as the final action for a Crosby task; report a human block instead of guessing or continuing unsafely."],
+    parameters: Type.Union([workerCompletionReportSchema, workerBlockedReportSchema]),
+    async execute(_toolCallId, params) {
+      const emit = (pi as any).events?.emit;
+      if (params.outcome === "blocked" && typeof emit !== "function") {
+        throw new Error("Crosby cannot report a blocked worker because the Pi/Herdr event bridge is unavailable. Recovery: ask the operator for help from the visible worker tab.");
+      }
+      const saved = await persistWorkerReport({
+        report: params,
+        emitHerdrBlocked: params.outcome === "blocked" ? (payload: any) => emit.call((pi as any).events, "herdr:blocked", payload) : undefined,
+      });
+      return {
+        content: [{ type: "text", text: `Crosby worker report recorded for ${saved.registry?.taskKey ?? process.env.CROSBY_TASK_KEY}.` }],
+        details: { outcome: params.outcome, reportedAt: saved.reportedAt },
+        terminate: true,
+      };
     },
   });
 }
@@ -716,6 +711,7 @@ function registerSupervisorTools(pi: ExtensionAPI) {
 }
 
 export default function crosbyExtension(pi: ExtensionAPI) {
+  registerWorkerReportTool(pi);
   registerSupervisorTools(pi);
   pi.registerCommand("crosby", {
     description: "Execute parent child-work, watch Execute parents, or explicitly push/review a parent PR",

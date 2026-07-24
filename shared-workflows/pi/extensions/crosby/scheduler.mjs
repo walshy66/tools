@@ -393,7 +393,18 @@ export function createVisibleWorkerScheduler(options = {}) {
         task,
         attemptCount: Number(worker.attemptCount ?? 0) + 1,
       });
-      tab = await herdr.createTaskTab({ workspace: text(workspace, "workspace"), label: childKey, cwd: task.path, focus: false });
+      tab = await herdr.createTaskTab({
+        workspace: text(workspace, "workspace"),
+        label: childKey,
+        cwd: task.path,
+        focus: false,
+        env: {
+          CROSBY_REGISTRY_ROOT: registryRoot,
+          CROSBY_REPOSITORY_ID: text(worker?.registry?.repositoryIdentity, "worker registry repository identity"),
+          CROSBY_PARENT_KEY: text(worker?.registry?.parentKey, "worker registry parent key"),
+          CROSBY_TASK_KEY: childKey,
+        },
+      });
       const agent = await herdr.startPiAgent({ pane: tab.pane, name });
       const herdrRecord = { workspace: tab.workspace, tab: tab.tab, pane: agent.pane, agent: agent.name };
       worker = await dependencies.updateWorkerRecord(store, childKey, {
@@ -423,7 +434,10 @@ export function createVisibleWorkerScheduler(options = {}) {
     const childKey = text(child?.identifier, "child issue key");
     let recoveredWorker = worker;
     try {
-      recoveredWorker = await dependencies.recordWorkerRecovery(store, childKey, "Recorded Herdr worker was unavailable during reconciliation.");
+      recoveredWorker = {
+        ...await dependencies.recordWorkerRecovery(store, childKey, "Recorded Herdr worker was unavailable during reconciliation."),
+        registry: worker.registry,
+      };
       return await start({ store, parent, child, prompt, workspace, worker: recoveredWorker, recovered: true });
     } catch (error) {
       const note = `Second recovery failure: ${describe(error)}`;
@@ -439,15 +453,17 @@ export function createVisibleWorkerScheduler(options = {}) {
   return {
     async waitForReport(worker) {
       const agent = text(worker?.herdr?.agent, "recorded Herdr agent");
+      const repositoryIdentity = text(worker?.registry?.repositoryIdentity, "worker registry repository identity");
+      const parentKey = text(worker?.registry?.parentKey, "worker registry parent key");
+      const taskKey = text(worker?.registry?.taskKey, "worker registry task key");
+      const store = dependencies.createRegistryStore({ root: registryRoot, repositoryIdentity, parentKey });
       await herdr.waitForAgent({ agent, until: ["idle", "done", "blocked"] });
-      const terminal = await herdr.readAgent({ agent, lines: 2000 });
-      let report;
+      const report = (await dependencies.readRegistry(store)).workers?.[taskKey]?.report;
       try {
-        report = validateWorkerReport(JSON.parse(String(terminal.text ?? "").trim()));
+        return validateWorkerReport(report);
       } catch (error) {
-        throw new VisibleWorkerReportError(`Visible worker ${agent} did not return a valid structured worker report: ${describe(error)}`);
+        throw new VisibleWorkerReportError(`Visible worker ${agent} did not submit a valid persisted structured worker report: ${describe(error)}`);
       }
-      return report;
     },
 
     async launch({ parent, child, prompt, sourcePath, repositoryIdentity, workspace }) {
@@ -460,14 +476,20 @@ export function createVisibleWorkerScheduler(options = {}) {
       });
       const registry = await dependencies.readRegistry(store);
       const existing = registry.workers?.[childKey];
+      const workerRegistry = {
+        repositoryIdentity: text(repositoryIdentity, "repository identity"),
+        parentKey,
+        taskKey: childKey,
+      };
 
       if (activeWorker(existing)) {
+        const recorded = { ...existing, registry: { ...workerRegistry, ...(existing.registry ?? {}) } };
         try {
-          await herdr.inspectAgent({ agent: existing.herdr.agent });
-          const adopted = await dependencies.updateWorkerRecord(store, childKey, { lifecycle: "running", adoptedAt: new Date().toISOString() });
+          await herdr.inspectAgent({ agent: recorded.herdr.agent });
+          const adopted = await dependencies.updateWorkerRecord(store, childKey, { lifecycle: "running", registry: recorded.registry, adoptedAt: new Date().toISOString() });
           return { worker: adopted, adopted: true, recovered: false };
         } catch {
-          return recover({ store, parent, child, prompt, workspace, worker: existing });
+          return recover({ store, parent, child, prompt, workspace, worker: recorded });
         }
       }
 
@@ -477,6 +499,7 @@ export function createVisibleWorkerScheduler(options = {}) {
         lifecycle: "launching",
         task: prepared.task,
         parentWorktree: prepared.parentWorktree,
+        registry: workerRegistry,
         attemptCount: Number(existing?.attemptCount ?? 0),
       };
       await dependencies.updateWorkerRecord(store, childKey, worker);

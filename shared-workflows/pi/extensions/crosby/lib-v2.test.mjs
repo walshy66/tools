@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseCrosbyCommandArgs, publishParentPullRequest, reviewParentPullRequest, runWatchCycle, runWatchMode } from "./lib-v2.mjs";
+import { buildRalphLoopPrompt, parseCrosbyCommandArgs, publishParentPullRequest, reviewParentPullRequest, runWatchCycle, runWatchMode } from "./lib-v2.mjs";
+
+test("instructs a Crosby worker to submit its persisted report tool", () => {
+  const prompt = buildRalphLoopPrompt({ identifier: "COA-365", title: "Implement reporting" });
+
+  assert.match(prompt, /crosby_worker_report/);
+  assert.doesNotMatch(prompt, /Return only a Worker Report JSON object/);
+});
 
 test("runWatchCycle keeps fatal worker issues in Build and does not move them to review", async () => {
   const moved = [];

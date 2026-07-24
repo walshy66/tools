@@ -117,9 +117,21 @@ test("claims a task, creates a visible tab, starts Pi, and persists Herdr identi
     task: { path: "/managed/COA-360/tasks/COA-365", branch: "feature/coa-360/coa-365", baseSha: "task-sha" },
     parentWorktree: { path: "/managed/COA-360/parent", branch: "feature/coa-360", baseSha: "parent-sha" },
     herdr: { workspace: "workspace-1", tab: "tab-365", pane: "pane-365", agent: "crosby-coa-365" },
+    registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
   });
   assert.deepEqual(calls.slice(-3), [
-    ["createTaskTab", { workspace: "workspace-1", label: "COA-365", cwd: "/managed/COA-360/tasks/COA-365", focus: false }],
+    ["createTaskTab", {
+      workspace: "workspace-1",
+      label: "COA-365",
+      cwd: "/managed/COA-360/tasks/COA-365",
+      focus: false,
+      env: {
+        CROSBY_REGISTRY_ROOT: "/registry",
+        CROSBY_REPOSITORY_ID: "repo",
+        CROSBY_PARENT_KEY: "COA-360",
+        CROSBY_TASK_KEY: "COA-365",
+      },
+    }],
     ["startPiAgent", { pane: "pane-365", name: "crosby-coa-365" }],
     ["promptAgent", { agent: "crosby-coa-365", prompt: "Return the worker report.", wait: false }],
   ]);
@@ -136,16 +148,26 @@ test("closes a partially started worker and retains launch evidence when Herdr s
   assert.match(registry.workers["COA-365"].launchError, /prompt failed/);
 });
 
-test("waits for and validates the worker's explicit structured report", async () => {
-  const { scheduler, calls } = harness();
+test("waits for and validates the worker's persisted structured report", async () => {
+  const { scheduler, registry, calls } = harness();
+  registry.workers["COA-365"] = {
+    report: {
+      outcome: "complete",
+      taskOutcome: "done",
+      summary: "Completed work.",
+      changes: { paths: ["in-scope.txt"], commit: "abc123" },
+      verification: [{ command: "node --test", result: "passed" }],
+      risks: [],
+    },
+  };
 
-  const report = await scheduler.waitForReport({ herdr: { agent: "crosby-coa-365" } });
+  const report = await scheduler.waitForReport({
+    herdr: { agent: "crosby-coa-365" },
+    registry: { repositoryIdentity: "repo", parentKey: "COA-360", taskKey: "COA-365" },
+  });
 
   assert.equal(report.outcome, "complete");
-  assert.deepEqual(calls, [
-    ["waitForAgent", { agent: "crosby-coa-365", until: ["idle", "done", "blocked"] }],
-    ["readAgent", { agent: "crosby-coa-365", lines: 2000 }],
-  ]);
+  assert.deepEqual(calls, [["waitForAgent", { agent: "crosby-coa-365", until: ["idle", "done", "blocked"] }]]);
 });
 
 test("maps explicit worker reports to the existing Crosby child outcome contract", () => {
