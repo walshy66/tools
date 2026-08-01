@@ -890,7 +890,7 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               systemPrompt: "You route isolated coding tasks to an allowed model. Follow the requested output format exactly.",
               messages: [message],
             },
-            { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 64, temperature: 0 },
+            { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 2048, temperature: 0 },
           );
           return response.content
             .filter((content: any) => content.type === "text")
