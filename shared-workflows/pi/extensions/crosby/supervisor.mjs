@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readRegistry, updateRegistry } from "./registry.mjs";
 import { transitionQueue } from "./state-machine.mjs";
 
@@ -20,6 +21,17 @@ function text(value, name) {
 
 function taskId(task) {
   return text(typeof task === "string" ? task : task?.id, "task ID");
+}
+
+function workerAgentName(store, id) {
+  const suffix = createHash("sha256")
+    .update([store.repositoryIdentity, store.parentKey, store.buildId, store.spaceId].join("\0"))
+    .digest("hex")
+    .slice(0, 8);
+  let base = id.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!/^[a-z]/.test(base)) base = `worker-${base}`;
+  base = base.slice(0, 23).replace(/[-_]+$/g, "") || "worker";
+  return `${base}-${suffix}`;
 }
 
 export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
@@ -87,7 +99,7 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
       const baseArgs = agentArgs === undefined || (Array.isArray(agentArgs) && agentArgs.length === 0)
         ? ["--approve"]
         : agentArgs;
-      const started = await client.startPiAgent({ pane: tab.pane, name: id, agentArgs: baseArgs });
+      const started = await client.startPiAgent({ pane: tab.pane, name: workerAgentName(store, id), agentArgs: baseArgs });
       await client.promptAgent({ agent: started.name, prompt: workerPrompt, wait: false });
       let worker = await updateRegistry(store, (current) => ({
         ...current,

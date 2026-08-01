@@ -6,11 +6,11 @@ import path from "node:path";
 import { createRegistryStore, readRegistry } from "./registry.mjs";
 import { createHerdrSupervisor } from "./supervisor.mjs";
 
-async function fixture() {
+async function fixture({ repositoryIdentity = "file:///repo" } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "crosby-supervisor-"));
   const store = createRegistryStore({
     root,
-    repositoryIdentity: "file:///repo",
+    repositoryIdentity,
     parentKey: "crosby/001-example",
     buildId: "001-example",
     buildFolder: "specs/001-example",
@@ -65,12 +65,26 @@ test("persists the supervisor identity and launches one visible worker without f
   assert.equal(worker.lifecycle, "working");
   assert.equal(worker.tab, "tab-1");
   assert.equal(worker.pane, "pane-1");
-  assert.equal(worker.agent, "task-001");
+  assert.match(worker.agent, /^task-001-[a-f0-9]{8}$/);
   assert.equal(calls[0][0], "createTaskTab");
   assert.equal(calls[0][1].focus, false);
   assert.equal(calls[1][0], "startPiAgent");
   assert.deepEqual(calls[1][1].agentArgs, ["--approve"]);
-  assert.deepEqual(calls[2], ["promptAgent", { agent: "task-001", prompt: "Implement task-001", wait: false }]);
+  assert.deepEqual(calls[2], ["promptAgent", { agent: worker.agent, prompt: "Implement task-001", wait: false }]);
+});
+
+test("scopes worker agent names to the build registry", async () => {
+  const first = await fixture({ repositoryIdentity: "file:///repo-one" });
+  const second = await fixture({ repositoryIdentity: "file:///repo-two" });
+
+  const firstWorker = await createHerdrSupervisor({ client: first.client, store: first.store })
+    .launchWorker({ task, cwd: "/work/task-001", prompt: "Implement task-001" });
+  const secondWorker = await createHerdrSupervisor({ client: second.client, store: second.store })
+    .launchWorker({ task, cwd: "/work/task-001", prompt: "Implement task-001" });
+
+  assert.notEqual(firstWorker.agent, secondWorker.agent);
+  assert.match(firstWorker.agent, /^task-001-[a-f0-9]{8}$/);
+  assert.ok(firstWorker.agent.length <= 32);
 });
 
 test("retains a working worker when optional lifecycle telemetry fails", async () => {
@@ -92,13 +106,13 @@ test("adopts an existing worker instead of launching a duplicate", async () => {
   const { store, client, calls } = await fixture();
   const supervisor = createHerdrSupervisor({ client, store });
   await supervisor.ensureSupervisor({ workspace: "space-1", pane: "parent-pane", agent: "parent-agent" });
-  await supervisor.launchWorker({ task, cwd: "/work/task-001", prompt: "Implement task-001" });
+  const launched = await supervisor.launchWorker({ task, cwd: "/work/task-001", prompt: "Implement task-001" });
   calls.length = 0;
 
   const adopted = await supervisor.adoptWorker(task.id);
   assert.equal(adopted.adopted, true);
-  assert.equal(adopted.worker.agent, "task-001");
-  assert.deepEqual(calls, [["inspectAgent", { agent: "task-001" }]]);
+  assert.equal(adopted.worker.agent, launched.agent);
+  assert.deepEqual(calls, [["inspectAgent", { agent: launched.agent }]]);
 });
 
 test("guides, pauses, resumes, and explicitly stops the worker", async () => {

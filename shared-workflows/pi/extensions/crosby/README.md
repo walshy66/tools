@@ -24,7 +24,7 @@ Run Crosby from a Pi session inside Herdr:
 
 `run` loads the build, creates or adopts the Herdr supervisor, creates the managed parent worktree, and launches the first task. `resume` reconciles durable state, integrates a completed report from its persisted task worktree without relaunching, and skips already integrated tasks. `status` reports the durable queue state without launching a worker.
 
-The parent tab remains interactive. The active task runs in its own visible Herdr tab and worktree, without stealing focus. Only one worker may own the queue gate at a time, and tasks advance strictly in authored order. Optional lifecycle-notification failures are retained as worker warnings and never reclassify a successfully launched worker as failed.
+The parent tab remains interactive. The active task runs in its own visible Herdr tab and worktree, without stealing focus. Worker agent names are scoped to the build registry so repeated task IDs from separate repositories do not collide in Herdr. Only one worker may own the queue gate at a time, and tasks advance strictly in authored order. Optional lifecycle-notification failures are retained as worker warnings and never reclassify a successfully launched worker as failed.
 
 ## Worker reports
 
