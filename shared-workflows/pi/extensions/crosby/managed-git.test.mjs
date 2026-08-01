@@ -58,6 +58,18 @@ test("managed parent and task worktrees leave the operator checkout untouched", 
   assert.notEqual(parent.path, operatorCheckout);
 });
 
+test("scopes managed worktrees by repository identity", async () => {
+  const first = await setupRepository();
+  const second = await setupRepository();
+  const managedRoot = await mkdtemp(path.join(tmpdir(), "crosby-managed-"));
+
+  const firstManaged = await createManagedRepository({ root: managedRoot, sourcePath: first.operatorCheckout });
+  const secondManaged = await createManagedRepository({ root: managedRoot, sourcePath: second.operatorCheckout });
+
+  assert.notEqual(firstManaged.barePath, secondManaged.barePath);
+  assert.notEqual(firstManaged.worktreeRoot, secondManaged.worktreeRoot);
+});
+
 test("collects all task changes and rejects an out-of-scope path", async () => {
   const { root, operatorCheckout } = await setupRepository();
   const managed = await createManagedRepository({ root: path.join(root, "managed"), sourcePath: operatorCheckout });
