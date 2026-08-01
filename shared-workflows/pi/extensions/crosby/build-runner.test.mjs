@@ -75,8 +75,11 @@ test("runs tasks strictly in authored order and requires explicit complete repor
     agent: "supervisor",
     registryRoot: storeRoot,
     adapters: {
-      createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
-      createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
+      createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work", sourceHead: "source-head" }),
+      createParentWorktree: async ({ baseRef }) => {
+        assert.equal(baseRef, "source-head");
+        return { path: "/work/parent", branch: "crosby/001-example", baseSha: "source-head" };
+      },
       createTaskWorktree: async ({ childKey, taskBranch }) => {
         assert.equal(taskBranch, `crosby/001-example-${childKey}`);
         return { path: `/work/${childKey}`, branch: taskBranch, baseSha: "base" };
@@ -104,6 +107,30 @@ test("runs tasks strictly in authored order and requires explicit complete repor
     thinking: "medium",
     source: "orchestrator",
   });
+});
+
+test("fails closed when an unstarted managed parent predates the committed source", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-stale-parent-"));
+  const buildFolder = path.join(root, "specs", "001-example");
+  await mkdir(buildFolder, { recursive: true });
+  await writeFile(path.join(buildFolder, "tasks.md"), tasks.split("\n## task-002")[0]);
+
+  await assert.rejects(
+    runBuild({
+      buildFolder,
+      sourcePath: root,
+      workspace: "space-1",
+      pane: "pane-1",
+      agent: "supervisor",
+      registryRoot: path.join(root, "registry"),
+      adapters: {
+        createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work", sourceHead: "current-source" }),
+        createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example", baseSha: "stale-source" }),
+        createHerdrSupervisor: () => ({ ensureSupervisor: async () => {} }),
+      },
+    }),
+    /managed parent predates committed source/,
+  );
 });
 
 test("stops at a HITL task before selecting a model or launching a worker", async () => {

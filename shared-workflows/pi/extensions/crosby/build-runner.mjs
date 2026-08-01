@@ -91,10 +91,24 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     spaceId: workspace,
   });
   const managed = await ops.createManagedRepository({ root, sourcePath: source, repositoryIdentity: identity });
-  const parent = await ops.createParentWorktree({ managedRepository: managed, parentKey: build.parentBranch, parentBranch: build.parentBranch });
+  const parent = await ops.createParentWorktree({
+    managedRepository: managed,
+    parentKey: build.parentBranch,
+    parentBranch: build.parentBranch,
+    baseRef: managed.sourceHead ?? undefined,
+  });
   const supervisor = ops.createHerdrSupervisor({ client: adapters.herdrClient, store, emitLifecycle: adapters.emitLifecycle });
   if (!supervisor || typeof supervisor.ensureSupervisor !== "function") throw new BuildRunnerError("A Herdr supervisor adapter is required.");
   await supervisor.ensureSupervisor({ workspace, pane, agent });
+  const initialRegistry = await readRegistry(store);
+  const hasExecutionEvidence = Object.values(initialRegistry.workers ?? {}).some((worker) =>
+    worker?.agent
+    || worker?.report
+    || !["prepared", "launch-failed"].includes(worker?.lifecycle),
+  );
+  if (managed.sourceHead && parent.baseSha && parent.baseSha !== managed.sourceHead && !hasExecutionEvidence) {
+    throw new BuildRunnerError("The managed parent predates committed source HEAD and has no accepted execution progress; explicit cleanup is required before a safe rerun.");
+  }
 
   const completed = [];
   for (const task of build.tasks) {

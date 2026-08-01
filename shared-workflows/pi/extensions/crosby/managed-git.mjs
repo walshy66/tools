@@ -76,9 +76,11 @@ export async function createManagedRepository({ root, sourcePath, sourceRemote, 
   await git(["-C", barePath, "remote", "set-url", "origin", source]);
   await git(["-C", barePath, "fetch", "origin", "--prune"]);
   if (sourcePath) await copyCommitIdentity(sourcePath, barePath);
+  const sourceHead = sourcePath ? await gitOutput(["-C", sourcePath, "rev-parse", "HEAD"]) : null;
   return {
     root: managedRoot,
     sourcePath: source,
+    sourceHead,
     repositoryIdentity: identity,
     barePath,
     worktreeRoot: path.join(managedRoot, "worktrees", safeName(identity)),
