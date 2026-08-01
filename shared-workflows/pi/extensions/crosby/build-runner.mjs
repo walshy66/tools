@@ -107,6 +107,9 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
       completed.push({ task, worker: currentWorker, report: currentWorker.report });
       continue;
     }
+    if (task.executionMode === "HITL") {
+      throw new BuildRunnerError(`Build reached human gate ${task.id}; explicit operator participation is required and no worker was launched.`);
+    }
     const hasReportedCompletion = currentWorker?.lifecycle === "reported" && currentWorker.report?.outcome === "complete";
     if (hasReportedCompletion && !validTaskWorktree(currentWorker.taskWorktree)) {
       throw new BuildRunnerError(`Worker ${task.id} reported completion without a persisted task worktree identity.`);

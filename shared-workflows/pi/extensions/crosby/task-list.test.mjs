@@ -64,12 +64,20 @@ Keep the task scoped.
   assert.equal(result.parentBranch, "crosby/001-example");
   assert.deepEqual(result.tasks.map((task) => task.id), ["task-001", "task-002"]);
   assert.equal(result.tasks[0].title, "Add parser");
+  assert.equal(result.tasks[0].executionMode, "AFK");
   assert.deepEqual(result.tasks[0].dependencies, []);
   assert.deepEqual(result.tasks[1].dependencies, ["task-001"]);
   assert.deepEqual(result.tasks[0].fileScope, ["src/parser.mjs"]);
   assert.deepEqual(result.tasks[0].verification, ["node --test src/parser.test.mjs"]);
   assert.match(result.tasks[0].instructions, /Read the build task list/);
   assert.match(result.tasks[0].guardrails, /Do not use a tracker/);
+});
+
+test("uses the outcome as worker instructions when an explicit Instructions section is omitted", () => {
+  const result = parseBuildTaskList(`# Build: 001-concise\n\n**Parent branch**: \`crosby/001-concise\`\n\n## task-001 — Concise task\n\n**Dependencies**: none\n**Outcome**: Deliver the complete concise task outcome.\n**Execution mode**: HITL\n\n### Acceptance criteria\n- The outcome is complete.\n\n### Crosby execution\n- Parallel: sequential\n- File scope:\n  - \`src/concise.mjs\`\n- Verification:\n  - \`node --test concise\`\n\n### Guardrails\nStay scoped.`);
+
+  assert.equal(result.tasks[0].instructions, "Deliver the complete concise task outcome.");
+  assert.equal(result.tasks[0].executionMode, "HITL");
 });
 
 test("rejects a task that depends on a later task", () => {

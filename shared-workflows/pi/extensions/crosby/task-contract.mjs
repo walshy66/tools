@@ -22,10 +22,12 @@ export function normalizeScope(value) {
     contractError(`File scope '${original}' must be repository-relative, not absolute.`);
   }
   if (/[\\]/.test(original)) contractError(`File scope '${original}' must use '/' separators.`);
-  if (/[?*\[\]{}]/.test(original)) contractError(`File scope '${original}' must be an exact file or directory, not a glob.`);
+  const recursiveDirectory = original.endsWith("/**");
+  const scopedPath = recursiveDirectory ? original.slice(0, -3) : original;
+  if (/[?*\[\]{}]/.test(scopedPath)) contractError(`File scope '${original}' must be an exact file or directory, not a glob.`);
 
-  const directory = /\/$/.test(original);
-  const segments = original.split("/").filter((segment) => segment && segment !== ".");
+  const directory = recursiveDirectory || /\/$/.test(scopedPath);
+  const segments = scopedPath.split("/").filter((segment) => segment && segment !== ".");
   if (segments.length === 0) contractError(`File scope '${original}' must not cover the whole repository.`);
   if (segments.some((segment) => segment === "..")) {
     contractError(`File scope '${original}' must not contain parent traversal.`);

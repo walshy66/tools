@@ -106,6 +106,37 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   });
 });
 
+test("stops at a HITL task before selecting a model or launching a worker", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-hitl-"));
+  const buildFolder = path.join(root, "specs", "001-example");
+  await mkdir(buildFolder, { recursive: true });
+  const hitlTask = tasks
+    .split("\n## task-002")[0]
+    .replace("**Outcome**: First", "**Outcome**: First\n**Execution mode**: HITL");
+  await writeFile(path.join(buildFolder, "tasks.md"), hitlTask);
+
+  await assert.rejects(
+    runBuild({
+      buildFolder,
+      sourcePath: root,
+      workspace: "space-1",
+      pane: "pane-1",
+      agent: "supervisor",
+      registryRoot: path.join(root, "registry"),
+      adapters: {
+        createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
+        createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
+        createHerdrSupervisor: () => ({
+          ensureSupervisor: async () => {},
+          launchWorker: async () => { throw new Error("must not launch HITL task"); },
+        }),
+        selectTaskModel: async () => { throw new Error("must not select a model for HITL task"); },
+      },
+    }),
+    /human gate task-001/,
+  );
+});
+
 test("resume integrates a reported worker from its persisted worktree without relaunching", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "crosby-resume-"));
   const buildFolder = path.join(root, "specs", "001-example");

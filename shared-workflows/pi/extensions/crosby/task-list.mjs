@@ -84,21 +84,23 @@ function parseTask(block, index) {
   const id = heading[1];
   const title = required(heading[2], `${id} title`);
   const outcome = required(metadata(block, "Outcome"), `${id} Outcome`);
+  const executionMode = (metadata(block, "Execution mode") || "AFK").toUpperCase();
+  if (executionMode !== "AFK" && executionMode !== "HITL") fail(`${id} Execution mode must be AFK or HITL.`);
   const acceptanceCriteria = listItems(section(block, "Acceptance criteria"));
   if (!acceptanceCriteria.length) fail(`${id} must declare acceptance criteria.`);
   const execution = section(block, "Crosby execution");
   if (!execution) fail(`${id} is missing Crosby execution.`);
   const parallel = metadata(execution, "Parallel").toLowerCase();
   if (parallel !== "sequential" && parallel !== "allowed") fail(`${id} Parallel must be sequential or allowed.`);
-  const instructions = section(block, "Instructions");
+  const instructions = section(block, "Instructions") || outcome;
   const guardrails = section(block, "Guardrails");
-  if (!instructions) fail(`${id} must declare Instructions.`);
   if (!guardrails) fail(`${id} must declare Guardrails.`);
   return {
     id,
     title,
     dependencies: dependencies(block, id),
     outcome,
+    executionMode,
     acceptanceCriteria,
     parallel,
     fileScope: fileScope(block, id),

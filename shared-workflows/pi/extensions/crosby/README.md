@@ -10,7 +10,7 @@ Create a numbered build folder containing `tasks.md`:
 specs/001-example/tasks.md
 ```
 
-The task list declares the build ID, parent branch, stable task IDs, order, acceptance criteria, file scope, verification, instructions, and guardrails. Generate it with the shared `to-issues` workflow. Markdown is input; durable execution state lives in the Crosby registry.
+The task list declares the build ID, parent branch, stable task IDs, order, outcome, acceptance criteria, file scope, verification, and guardrails. An optional `### Instructions` section may add worker-specific direction; when omitted, Crosby uses the task outcome as its concise instruction. `Execution mode` defaults to `AFK`; a `HITL` task is a hard human gate and Crosby stops before model selection or worker launch. Directory scope may use a trailing `/` or the explicit recursive form `/**`; other globs remain invalid. Generate the build with the shared `to-issues` workflow. Markdown is input; durable execution state lives in the Crosby registry.
 
 ## Run
 
