@@ -26,6 +26,16 @@ Run Crosby from a Pi session inside Herdr:
 
 The parent tab remains interactive. The active task runs in its own visible Herdr tab and worktree, without stealing focus. Repository identity scopes managed worktree paths, and worker agent names are scoped to the build registry, so repeated build and task IDs from separate repositories cannot collide. Only one worker may own the queue gate at a time, and tasks advance strictly in authored order. Optional lifecycle-notification failures are retained as worker warnings and never reclassify a successfully launched worker as failed.
 
+## Worker model selection
+
+Before launching each new task, the parent Pi model assesses the task contract and chooses from the authenticated reasoning-capable models available on the parent model's provider. Crosby validates that the answer is in this allowed pool, persists the selection in the worker registry, and starts Pi with:
+
+```text
+pi --model <selected-provider/model> --thinking medium --approve
+```
+
+A resumed worker reuses its persisted selection rather than reassessing. Missing parent-model context, authentication failure, an empty candidate pool, or an out-of-pool answer fails closed before worker launch. The operator sees the selected model and thinking level in the parent tab.
+
 ## Worker reports
 
 A worker must finish with exactly one structured report using `crosby_worker_report`:

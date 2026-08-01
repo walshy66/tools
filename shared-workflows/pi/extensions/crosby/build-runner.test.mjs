@@ -58,9 +58,11 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   const storeRoot = path.join(root, "registry");
   const supervisor = {
     ensureSupervisor: async () => {},
-    launchWorker: async ({ task, prompt }) => {
+    launchWorker: async ({ task, prompt, agentArgs }) => {
       assert.match(prompt, /Read the complete task contract from .*tasks\.md/);
       assert.doesNotMatch(prompt, /First works\.|Second works\./);
+      const expectedModel = task.id === "task-001" ? "openai-codex/gpt-5.6-luna" : "openai-codex/gpt-5.6-terra";
+      assert.deepEqual(agentArgs, ["--model", expectedModel, "--thinking", "medium", "--approve"]);
       calls.push(`launch:${task.id}`);
       return { agent: task.id };
     },
@@ -80,16 +82,27 @@ test("runs tasks strictly in authored order and requires explicit complete repor
         return { path: `/work/${childKey}`, branch: taskBranch, baseSha: "base" };
       },
       createHerdrSupervisor: () => supervisor,
+      selectTaskModel: async ({ task }) => ({
+        model: task.id === "task-001" ? "openai-codex/gpt-5.6-luna" : "openai-codex/gpt-5.6-terra",
+        thinking: "medium",
+        source: "orchestrator",
+      }),
       waitForReport: async ({ task }) => { calls.push(`report:${task.id}`); return { outcome: "complete" }; },
       integrateTask: async ({ task }) => { calls.push(`integrate:${task.id}`); },
     },
   });
   assert.deepEqual(calls, ["launch:task-001", "report:task-001", "integrate:task-001", "launch:task-002", "report:task-002", "integrate:task-002"]);
   assert.equal(result.completed.length, 2);
-  assert.deepEqual((await readRegistry(result.registry)).workers["task-001"].taskWorktree, {
+  const firstWorker = (await readRegistry(result.registry)).workers["task-001"];
+  assert.deepEqual(firstWorker.taskWorktree, {
     path: "/work/task-001",
     branch: "crosby/001-example-task-001",
     baseSha: "base",
+  });
+  assert.deepEqual(firstWorker.modelSelection, {
+    model: "openai-codex/gpt-5.6-luna",
+    thinking: "medium",
+    source: "orchestrator",
   });
 });
 

@@ -1,3 +1,4 @@
+import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { existsSync } from "node:fs";
@@ -29,6 +30,7 @@ import { parseProjectConfig } from "./project-config.mjs";
 import { parseBuildCommandArgs, readBuildStatus, runBuild } from "./build-runner.mjs";
 import { readRegistry } from "./registry.mjs";
 import { integrateTask } from "./integration.mjs";
+import { buildModelCandidates, selectTaskModel } from "./model-selector.mjs";
 
 function getLinearInvocation(args: string[]) {
   const configured = process.env.LINEAR_BIN?.trim();
@@ -869,6 +871,33 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           ctx.ui.notify(`Crosby ${status.build.buildId}: ${status.registry.queueState}; current task: ${status.registry.currentTask ?? "none"}.`, "info");
           return;
         }
+        if (!ctx.model) throw new Error("Crosby requires an active parent Pi model to assess worker model selection.");
+        const modelCandidates = buildModelCandidates({
+          currentModel: ctx.model,
+          availableModels: ctx.modelRegistry.getAvailable(),
+        });
+        const assessTaskModel = async (prompt: string) => {
+          const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
+          if (!auth.ok) throw new Error(`Could not authenticate the Crosby model-selection orchestrator: ${auth.error}`);
+          const message: UserMessage = {
+            role: "user",
+            content: [{ type: "text", text: prompt }],
+            timestamp: Date.now(),
+          };
+          const response = await complete(
+            ctx.model!,
+            {
+              systemPrompt: "You route isolated coding tasks to an allowed model. Follow the requested output format exactly.",
+              messages: [message],
+            },
+            { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 64, temperature: 0 },
+          );
+          return response.content
+            .filter((content: any) => content.type === "text")
+            .map((content: any) => content.text)
+            .join("")
+            .trim();
+        };
         const waitForReport = async ({ task, store }: any) => {
           while (true) {
             const registry = await readRegistry(store);
@@ -887,6 +916,12 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           repositoryIdentity: identity,
           adapters: {
             herdrClient: herdr,
+            selectTaskModel: async ({ task }: any) => {
+              const selection = await selectTaskModel({ task, candidates: modelCandidates, assess: assessTaskModel });
+              pi.appendEntry("crosby-worker-model-selected", { taskId: task.id, ...selection });
+              ctx.ui.notify(`Crosby ${task.id}: ${selection.model} with ${selection.thinking} thinking.`, "info");
+              return selection;
+            },
             waitForReport,
             integrateTask: (input: any) => integrateTask(input),
             emitLifecycle: (event: any) => pi.appendEntry("crosby-worker-lifecycle", event),

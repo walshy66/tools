@@ -23,6 +23,15 @@ export function parseBuildCommandArgs(args) {
   return { mode, buildFolder: tokens[1] };
 }
 
+function validModelSelection(value) {
+  return value
+    && typeof value === "object"
+    && typeof value.model === "string"
+    && value.model.includes("/")
+    && value.thinking === "medium"
+    && value.source === "orchestrator";
+}
+
 function validTaskWorktree(value) {
   return value
     && typeof value === "object"
@@ -102,6 +111,23 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     if (hasReportedCompletion && !validTaskWorktree(currentWorker.taskWorktree)) {
       throw new BuildRunnerError(`Worker ${task.id} reported completion without a persisted task worktree identity.`);
     }
+    let modelSelection = currentWorker?.modelSelection;
+    if (!hasReportedCompletion && !validModelSelection(modelSelection)) {
+      if (typeof ops.selectTaskModel !== "function") {
+        throw new BuildRunnerError(`Task ${task.id} requires an orchestrator model selection before worker launch.`);
+      }
+      modelSelection = await ops.selectTaskModel({ task, build });
+      if (!validModelSelection(modelSelection)) {
+        throw new BuildRunnerError(`Task ${task.id} received an invalid orchestrator model selection.`);
+      }
+      await updateRegistry(store, (registry) => ({
+        ...registry,
+        workers: {
+          ...registry.workers,
+          [task.id]: { ...(registry.workers[task.id] ?? {}), taskId: task.id, modelSelection },
+        },
+      }));
+    }
     let taskWorktree = currentWorker?.taskWorktree;
     if (!validTaskWorktree(taskWorktree)) {
       taskWorktree = await ops.createTaskWorktree({
@@ -130,6 +156,7 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
           task,
           cwd: taskWorktree.path,
           prompt: taskPrompt(build, task),
+          agentArgs: ["--model", modelSelection.model, "--thinking", "medium", "--approve"],
           env: {
             CROSBY_REGISTRY_ROOT: root,
             CROSBY_REPOSITORY_ID: identity,
