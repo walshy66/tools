@@ -19,8 +19,17 @@ export function buildModelCandidates({ currentModel, availableModels } = {}) {
   const provider = String(currentModel?.provider ?? "").trim();
   if (!provider) fail("Crosby model assessment requires the parent Pi model provider.");
   if (!Array.isArray(availableModels)) fail("Crosby model assessment requires the available Pi model catalogue.");
+  const currentId = String(currentModel?.id ?? "");
+  const codexFamily = provider === "openai-codex" ? currentId.match(/^(gpt-\d+\.\d+)-/)?.[1] : null;
   const candidates = availableModels
-    .filter((model) => model?.provider === provider && model.reasoning === true && !/-\d{8}$/.test(String(model.id ?? "")))
+    .filter((model) => {
+      const id = String(model?.id ?? "");
+      return model?.provider === provider
+        && model.reasoning === true
+        && !/-\d{8}$/.test(id)
+        && !(provider === "openai-codex" && /spark/i.test(id))
+        && !(codexFamily && !id.startsWith(`${codexFamily}-`));
+    })
     .map((model) => ({
       model: `${model.provider}/${model.id}`,
       reasoning: true,
@@ -39,6 +48,8 @@ function taskAssessmentPrompt(task, candidates) {
       candidate.reasoning === true ? "reasoning" : "standard",
       Number.isFinite(candidate.contextWindow) ? `context=${candidate.contextWindow}` : null,
       Number.isFinite(candidate.maxTokens) ? `max-output=${candidate.maxTokens}` : null,
+      Number.isFinite(candidate.cost?.input) ? `input-cost=${candidate.cost.input}/M` : null,
+      Number.isFinite(candidate.cost?.output) ? `output-cost=${candidate.cost.output}/M` : null,
     ].filter(Boolean).join(", ");
     return `- ${modelId(candidate)}${details ? ` (${details})` : ""}`;
   });

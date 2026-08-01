@@ -890,13 +890,18 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               systemPrompt: "You route isolated coding tasks to an allowed model. Follow the requested output format exactly.",
               messages: [message],
             },
-            { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 2048, temperature: 0 },
+            { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 2048 },
           );
-          return response.content
+          const text = response.content
             .filter((content: any) => content.type === "text")
             .map((content: any) => content.text)
             .join("")
             .trim();
+          if (!text) {
+            const contentTypes = response.content.map((content: any) => content.type).join(", ") || "none";
+            throw new Error(`Crosby model-selection assessment returned no text (stop reason: ${response.stopReason}; content: ${contentTypes}; error: ${response.errorMessage ?? "none"}).`);
+          }
+          return text;
         };
         const waitForReport = async ({ task, store }: any) => {
           while (true) {

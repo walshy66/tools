@@ -24,6 +24,8 @@ test("builds a focused candidate pool from available models on the parent provid
     availableModels: [
       { provider: "openai-codex", id: "gpt-5.6-luna", reasoning: true, contextWindow: 272000 },
       { provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true, contextWindow: 272000 },
+      { provider: "openai-codex", id: "gpt-5.3-codex-spark", reasoning: true, contextWindow: 128000 },
+      { provider: "openai-codex", id: "gpt-5.4-mini", reasoning: true, contextWindow: 272000 },
       { provider: "openai-codex", id: "gpt-5.6-sol-20260101", reasoning: true, contextWindow: 272000 },
       { provider: "anthropic", id: "claude-sonnet-5", reasoning: true, contextWindow: 1000000 },
     ],

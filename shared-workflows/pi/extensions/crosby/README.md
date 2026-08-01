@@ -28,7 +28,7 @@ The parent tab remains interactive. The active task runs in its own visible Herd
 
 ## Worker model selection
 
-Before launching each new task, the parent Pi model assesses the task contract and chooses from the authenticated reasoning-capable models available on the parent model's provider. Crosby validates that the answer is in this allowed pool, persists the selection in the worker registry, and starts Pi with:
+Before launching each new task, the parent Pi model assesses the task contract and chooses from a focused pool of authenticated, reasoning-capable models on the parent model's provider. For versioned OpenAI Codex models, the pool stays within the parent's model family (for example, the available GPT-5.6 variants) to avoid routing to older or account-incompatible entries. Crosby validates that the answer is in this allowed pool, persists the selection in the worker registry, and starts Pi with:
 
 ```text
 pi --model <selected-provider/model> --thinking medium --approve
