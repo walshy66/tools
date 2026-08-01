@@ -44,6 +44,22 @@ test("parses Herdr tab create envelopes with nested tab and root pane records", 
   });
 });
 
+test("runs a shell-native Pi command in an existing pane without requiring a JSON envelope", async () => {
+  const calls = [];
+  const invoke = createHerdrCliInvoker({
+    exec: async (command, args) => {
+      calls.push([command, args]);
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  assert.deepEqual(
+    await invoke("runPaneCommand", { pane: "w1:p2", command: "pi --approve" }),
+    { pane: "w1:p2" },
+  );
+  assert.deepEqual(calls, [["herdr", ["pane", "run", "w1:p2", "pi --approve"]]]);
+});
+
 test("parses JSON envelopes for stateful Herdr operations", async () => {
   const invoke = createHerdrCliInvoker({
     exec: async () => ({

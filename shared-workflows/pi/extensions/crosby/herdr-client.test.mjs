@@ -44,7 +44,7 @@ test("exposes validated agent control operations", async () => {
     sendAgentKeys: { state: "working" },
     stopAgent: { state: "done" },
   });
-  const client = createHerdrClient({ invoke: fake.invoke });
+  const client = createHerdrClient({ invoke: fake.invoke, platform: "linux" });
 
   assert.deepEqual(await client.snapshot(), { workspaces: [] });
   assert.deepEqual(await client.closeTaskTab({ tab: "tab-1" }), { tab: "tab-1" });
@@ -58,6 +58,25 @@ test("exposes validated agent control operations", async () => {
   assert.deepEqual(await client.inspectAgent({ agent: "coa-364-worker" }), { name: "coa-364-worker", state: "blocked" });
   assert.deepEqual(await client.sendAgentKeys({ agent: "coa-364-worker", keys: ["ctrl-c"] }), { state: "working" });
   assert.deepEqual(await client.stopAgent({ agent: "coa-364-worker" }), { state: "done" });
+});
+
+test("starts Pi through the interactive Windows shell and names it after detection", async () => {
+  const fake = fakeHerdr({
+    runPaneCommand: { pane: "pane-1" },
+    inspectAgent: { name: "pi", pane: "pane-1", state: "idle" },
+    renameAgent: { name: "task-001", pane: "pane-1", state: "idle" },
+  });
+  const client = createHerdrClient({ invoke: fake.invoke, platform: "win32" });
+
+  assert.deepEqual(
+    await client.startPiAgent({ pane: "pane-1", name: "task-001", agentArgs: ["--approve"] }),
+    { name: "task-001", pane: "pane-1", state: "idle" },
+  );
+  assert.deepEqual(fake.calls, [
+    { operation: "runPaneCommand", input: { pane: "pane-1", command: "pi --approve" } },
+    { operation: "inspectAgent", input: { agent: "pane-1" } },
+    { operation: "renameAgent", input: { agent: "pane-1", name: "task-001" } },
+  ]);
 });
 
 test("fails closed with recovery guidance for adapter failures and malformed Herdr responses", async () => {
