@@ -27,7 +27,15 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
     fail("Herdr supervisor requires a validated Herdr client.");
   }
   if (!store) fail("Herdr supervisor requires a durable registry store.");
-  const emit = (payload) => { if (typeof emitLifecycle === "function") emit(payload); };
+  const emit = (payload) => {
+    if (typeof emitLifecycle !== "function") return null;
+    try {
+      emitLifecycle(payload);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
 
   async function ensureSupervisor({ workspace, pane, agent } = {}) {
     const identity = {
@@ -81,11 +89,17 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
         : agentArgs;
       const started = await client.startPiAgent({ pane: tab.pane, name: id, agentArgs: baseArgs });
       await client.promptAgent({ agent: started.name, prompt: workerPrompt, wait: false });
-      const worker = await updateRegistry(store, (current) => ({
+      let worker = await updateRegistry(store, (current) => ({
         ...current,
         workers: { ...current.workers, [id]: { ...current.workers[id], agent: started.name, lifecycle: "working" } },
       }));
-      emit({ taskId: id, lifecycle: "working", agent: started.name, tab: tab.tab });
+      const lifecycleWarning = emit({ taskId: id, lifecycle: "working", agent: started.name, tab: tab.tab });
+      if (lifecycleWarning) {
+        worker = await updateRegistry(store, (current) => ({
+          ...current,
+          workers: { ...current.workers, [id]: { ...current.workers[id], lifecycleWarning } },
+        }));
+      }
       return worker.workers[id];
     } catch (error) {
       await updateRegistry(store, (current) => ({

@@ -73,6 +73,21 @@ test("persists the supervisor identity and launches one visible worker without f
   assert.deepEqual(calls[2], ["promptAgent", { agent: "task-001", prompt: "Implement task-001", wait: false }]);
 });
 
+test("retains a working worker when optional lifecycle telemetry fails", async () => {
+  const { store, client } = await fixture();
+  const supervisor = createHerdrSupervisor({
+    client,
+    store,
+    emitLifecycle: () => { throw new RangeError("Maximum call stack size exceeded"); },
+  });
+
+  const worker = await supervisor.launchWorker({ task, cwd: "/work/task-001", prompt: "Implement task-001" });
+
+  assert.equal(worker.lifecycle, "working");
+  assert.match(worker.lifecycleWarning, /Maximum call stack size exceeded/);
+  assert.equal((await readRegistry(store)).queueState, "working");
+});
+
 test("adopts an existing worker instead of launching a duplicate", async () => {
   const { store, client, calls } = await fixture();
   const supervisor = createHerdrSupervisor({ client, store });
