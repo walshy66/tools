@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { validateQueueState } from "./state-machine.mjs";
 
 export const REGISTRY_VERSION = 1;
 
@@ -21,20 +22,26 @@ function requireText(value, name) {
   return text;
 }
 
-export function registryKey(repositoryIdentity, parentKey) {
-  return createHash("sha256").update(`${requireText(repositoryIdentity, "repositoryIdentity")}\0${requireText(parentKey, "parentKey")}`).digest("hex");
+export function registryKey(repositoryIdentity, parentKey, buildId = "default", spaceId = "default") {
+  return createHash("sha256").update(`${requireText(repositoryIdentity, "repositoryIdentity")}\0${requireText(parentKey, "parentKey")}\0${requireText(buildId, "buildId")}\0${requireText(spaceId, "spaceId")}`).digest("hex");
 }
 
-export function createRegistryStore({ root, repositoryIdentity, parentKey, lockTimeoutMs = 10_000, staleLockMs = 120_000 } = {}) {
+export function createRegistryStore({ root, repositoryIdentity, parentKey, buildId = "default", buildFolder = null, parentBranch = null, spaceId = "default", lockTimeoutMs = 10_000, staleLockMs = 120_000 } = {}) {
   const registryRoot = requireText(root, "root");
   const identity = requireText(repositoryIdentity, "repositoryIdentity");
   const parent = requireText(parentKey, "parentKey");
-  const key = registryKey(identity, parent);
+  const build = requireText(buildId, "buildId");
+  const space = requireText(spaceId, "spaceId");
+  const key = registryKey(identity, parent, build, space);
   const basePath = path.join(registryRoot, "registries", key);
   return {
     root: registryRoot,
     repositoryIdentity: identity,
     parentKey: parent,
+    buildId: build,
+    buildFolder,
+    parentBranch,
+    spaceId: space,
     path: `${basePath}.json`,
     lockPath: `${basePath}.lock`,
     lockTimeoutMs,
@@ -47,6 +54,14 @@ function initialRegistry(store) {
     version: REGISTRY_VERSION,
     repositoryIdentity: store.repositoryIdentity,
     parentKey: store.parentKey,
+    buildId: store.buildId,
+    buildFolder: store.buildFolder,
+    parentBranch: store.parentBranch,
+    spaceId: store.spaceId,
+    supervisor: null,
+    queueState: "ready",
+    currentTask: null,
+    tasks: {},
     parent: null,
     workers: {},
   };
@@ -58,8 +73,17 @@ function validateRegistry(registry, store) {
   if (registry.repositoryIdentity !== store.repositoryIdentity || registry.parentKey !== store.parentKey) {
     registryError("Registry identity does not match the requested repository and parent.");
   }
+  for (const field of ["buildId", "spaceId"]) {
+    if (typeof registry[field] !== "string" || !registry[field].trim()) registryError(`Registry ${field} must be a non-empty string.`);
+  }
+  if (!registry.tasks || typeof registry.tasks !== "object" || Array.isArray(registry.tasks)) registryError("Registry tasks must be an object keyed by stable task ID.");
+  try {
+    validateQueueState(registry);
+  } catch (error) {
+    registryError(error.message);
+  }
   if (!registry.workers || typeof registry.workers !== "object" || Array.isArray(registry.workers)) {
-    registryError("Registry workers must be an object keyed by child issue.");
+    registryError("Registry workers must be an object keyed by stable task ID.");
   }
   return registry;
 }

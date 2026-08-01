@@ -22,6 +22,10 @@ function argumentsFor(operation, input) {
       return ["agent", "read", input.agent, "--source", input.source ?? "recent-unwrapped", ...(input.lines ? ["--lines", String(input.lines)] : [])];
     case "renameAgent":
       return ["agent", "rename", input.agent, input.name];
+    case "sendAgentKeys":
+      return ["agent", "keys", input.agent, ...input.keys.flatMap((key) => ["--key", key])];
+    case "stopAgent":
+      return ["agent", "stop", input.agent];
     case "inspectAgent":
       return ["agent", "get", input.agent];
     default:
@@ -64,6 +68,8 @@ export function createHerdrCliInvoker({ exec } = {}) {
       case "promptAgent":
       case "waitForAgent":
       case "renameAgent":
+      case "sendAgentKeys":
+      case "stopAgent":
       case "inspectAgent":
         return { ...agent, name: agent.name ?? agent.agent, state: agent.state ?? agent.agent_status };
       default:

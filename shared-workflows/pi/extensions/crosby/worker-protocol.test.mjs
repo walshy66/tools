@@ -57,6 +57,20 @@ test("validates a block report that requests visible Herdr blocked state", () =>
   assert.equal(isWorkerCompletionReport(report), false);
 });
 
+test("validates failed and cancelled terminal reports", () => {
+  for (const outcome of ["failed", "cancelled"]) {
+    assert.deepEqual(validateWorkerReport({
+      outcome,
+      summary: `Worker ${outcome}.`,
+      recoveryNotes: ["Inspect the retained worktree."],
+    }), {
+      outcome,
+      summary: `Worker ${outcome}.`,
+      recoveryNotes: ["Inspect the retained worktree."],
+    });
+  }
+});
+
 test("rejects malformed reports with actionable recovery guidance", () => {
   for (const report of [
     undefined,
