@@ -57,7 +57,7 @@ Before integration Crosby:
 3. Commits task evidence if needed.
 4. Merges serially into the parent branch.
 
-Scope violations, failed verification, merge conflicts, blocked reports, failed reports, and cancelled reports stop the queue. Task worktrees and branches remain available for inspection. Crosby does not auto-resolve conflicts, delete evidence, push, or create a PR.
+Scope violations, failed verification, merge conflicts, blocked reports, failed reports, and cancelled reports stop the queue. Task worktrees and branches remain available for inspection. A worker-launch failure also retains its newly created Herdr tab so the operator can inspect the terminal evidence before explicit cleanup. Crosby does not auto-resolve conflicts, delete evidence, push, or create a PR.
 
 After a restart, Crosby adopts recorded Herdr workers when they are inspectable and never launches a duplicate for an uncertain active task. Herdr unavailability fails closed.
 

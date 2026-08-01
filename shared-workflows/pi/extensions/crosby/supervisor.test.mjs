@@ -69,8 +69,8 @@ test("persists the supervisor identity and launches one visible worker without f
   assert.equal(calls[0][0], "createTaskTab");
   assert.equal(calls[0][1].focus, false);
   assert.equal(calls[1][0], "startPiAgent");
-  assert.deepEqual(calls[1][1].agentArgs, ["--approve", "Implement task-001"]);
-  assert.equal(calls.some(([operation]) => operation === "promptAgent"), false);
+  assert.deepEqual(calls[1][1].agentArgs, ["--approve"]);
+  assert.deepEqual(calls[2], ["promptAgent", { agent: "task-001", prompt: "Implement task-001", wait: false }]);
 });
 
 test("adopts an existing worker instead of launching a duplicate", async () => {
@@ -99,7 +99,7 @@ test("guides, pauses, resumes, and explicitly stops the worker", async () => {
   assert.equal((await readRegistry(store)).queueState, "cancelled");
 });
 
-test("closes a newly created tab when agent launch fails and leaves recovery state", async () => {
+test("retains a newly created tab when agent launch fails so the operator can inspect evidence", async () => {
   const { store, client, calls } = await fixture();
   client.startPiAgent = async (input) => { calls.push(["startPiAgent", input]); throw new Error("agent unavailable"); };
   const supervisor = createHerdrSupervisor({ client, store });
@@ -109,7 +109,8 @@ test("closes a newly created tab when agent launch fails and leaves recovery sta
     /agent unavailable/,
   );
   const registry = await readRegistry(store);
-  assert.deepEqual(calls.map(([name]) => name), ["createTaskTab", "startPiAgent", "closeTaskTab"]);
+  assert.deepEqual(calls.map(([name]) => name), ["createTaskTab", "startPiAgent"]);
   assert.equal(registry.workers[task.id].lifecycle, "launch-failed");
   assert.equal(registry.workers[task.id].tab, "tab-1");
+  assert.equal(registry.workers[task.id].pane, "pane-1");
 });

@@ -79,7 +79,8 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
       const baseArgs = agentArgs === undefined || (Array.isArray(agentArgs) && agentArgs.length === 0)
         ? ["--approve"]
         : agentArgs;
-      const started = await client.startPiAgent({ pane: tab.pane, name: id, agentArgs: [...baseArgs, workerPrompt] });
+      const started = await client.startPiAgent({ pane: tab.pane, name: id, agentArgs: baseArgs });
+      await client.promptAgent({ agent: started.name, prompt: workerPrompt, wait: false });
       const worker = await updateRegistry(store, (current) => ({
         ...current,
         workers: { ...current.workers, [id]: { ...current.workers[id], agent: started.name, lifecycle: "working" } },
@@ -87,9 +88,6 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
       emit({ taskId: id, lifecycle: "working", agent: started.name, tab: tab.tab });
       return worker.workers[id];
     } catch (error) {
-      if (tab?.tab) {
-        try { await client.closeTaskTab({ tab: tab.tab }); } catch { /* retain durable evidence when Herdr cleanup fails */ }
-      }
       await updateRegistry(store, (current) => ({
         ...current,
         queueState: "ready",
