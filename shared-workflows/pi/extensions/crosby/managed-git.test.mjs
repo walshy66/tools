@@ -58,6 +58,30 @@ test("managed parent and task worktrees leave the operator checkout untouched", 
   assert.notEqual(parent.path, operatorCheckout);
 });
 
+test("refreshes the committed source HEAD used by a new managed parent", async () => {
+  const { root, operatorCheckout } = await setupRepository();
+  const managedRoot = path.join(root, "managed");
+  const first = await createManagedRepository({ root: managedRoot, sourcePath: operatorCheckout });
+  const initialHead = (await git(operatorCheckout, "rev-parse", "HEAD")).stdout.trim();
+  assert.equal(first.sourceHead, initialHead);
+
+  await writeFile(path.join(operatorCheckout, "new-plan.md"), "approved plan\n");
+  await git(operatorCheckout, "add", "new-plan.md");
+  await git(operatorCheckout, "commit", "-m", "docs: approve plan");
+  const currentHead = (await git(operatorCheckout, "rev-parse", "HEAD")).stdout.trim();
+
+  const refreshed = await createManagedRepository({ root: managedRoot, sourcePath: operatorCheckout });
+  const parent = await createParentWorktree({
+    managedRepository: refreshed,
+    parentKey: "COA-361",
+    parentBranch: "crosby/current-parent",
+    baseRef: refreshed.sourceHead,
+  });
+
+  assert.equal(refreshed.sourceHead, currentHead);
+  assert.equal(parent.baseSha, currentHead);
+});
+
 test("scopes managed worktrees by repository identity", async () => {
   const first = await setupRepository();
   const second = await setupRepository();

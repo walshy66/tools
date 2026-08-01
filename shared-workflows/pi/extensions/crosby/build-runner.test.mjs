@@ -58,9 +58,11 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   const storeRoot = path.join(root, "registry");
   const supervisor = {
     ensureSupervisor: async () => {},
-    launchWorker: async ({ task, prompt }) => {
+    launchWorker: async ({ task, prompt, modelSelection }) => {
       assert.match(prompt, /Read the complete task contract from .*tasks\.md/);
       assert.doesNotMatch(prompt, /First works\.|Second works\./);
+      const expectedModel = task.id === "task-001" ? "openai-codex/gpt-5.6-luna" : "openai-codex/gpt-5.6-terra";
+      assert.deepEqual(modelSelection, { model: expectedModel, thinking: "medium", source: "orchestrator" });
       calls.push(`launch:${task.id}`);
       return { agent: task.id };
     },
@@ -73,24 +75,93 @@ test("runs tasks strictly in authored order and requires explicit complete repor
     agent: "supervisor",
     registryRoot: storeRoot,
     adapters: {
-      createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
-      createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
+      createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work", sourceHead: "source-head" }),
+      createParentWorktree: async ({ baseRef }) => {
+        assert.equal(baseRef, "source-head");
+        return { path: "/work/parent", branch: "crosby/001-example", baseSha: "source-head" };
+      },
       createTaskWorktree: async ({ childKey, taskBranch }) => {
         assert.equal(taskBranch, `crosby/001-example-${childKey}`);
         return { path: `/work/${childKey}`, branch: taskBranch, baseSha: "base" };
       },
       createHerdrSupervisor: () => supervisor,
+      selectTaskModel: async ({ task }) => ({
+        model: task.id === "task-001" ? "openai-codex/gpt-5.6-luna" : "openai-codex/gpt-5.6-terra",
+        thinking: "medium",
+        source: "orchestrator",
+      }),
       waitForReport: async ({ task }) => { calls.push(`report:${task.id}`); return { outcome: "complete" }; },
       integrateTask: async ({ task }) => { calls.push(`integrate:${task.id}`); },
     },
   });
   assert.deepEqual(calls, ["launch:task-001", "report:task-001", "integrate:task-001", "launch:task-002", "report:task-002", "integrate:task-002"]);
   assert.equal(result.completed.length, 2);
-  assert.deepEqual((await readRegistry(result.registry)).workers["task-001"].taskWorktree, {
+  const firstWorker = (await readRegistry(result.registry)).workers["task-001"];
+  assert.deepEqual(firstWorker.taskWorktree, {
     path: "/work/task-001",
     branch: "crosby/001-example-task-001",
     baseSha: "base",
   });
+  assert.deepEqual(firstWorker.modelSelection, {
+    model: "openai-codex/gpt-5.6-luna",
+    thinking: "medium",
+    source: "orchestrator",
+  });
+});
+
+test("fails closed when an unstarted managed parent predates the committed source", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-stale-parent-"));
+  const buildFolder = path.join(root, "specs", "001-example");
+  await mkdir(buildFolder, { recursive: true });
+  await writeFile(path.join(buildFolder, "tasks.md"), tasks.split("\n## task-002")[0]);
+
+  await assert.rejects(
+    runBuild({
+      buildFolder,
+      sourcePath: root,
+      workspace: "space-1",
+      pane: "pane-1",
+      agent: "supervisor",
+      registryRoot: path.join(root, "registry"),
+      adapters: {
+        createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work", sourceHead: "current-source" }),
+        createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example", baseSha: "stale-source" }),
+        createHerdrSupervisor: () => ({ ensureSupervisor: async () => {} }),
+      },
+    }),
+    /managed parent predates committed source/,
+  );
+});
+
+test("stops at a HITL task before selecting a model or launching a worker", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-hitl-"));
+  const buildFolder = path.join(root, "specs", "001-example");
+  await mkdir(buildFolder, { recursive: true });
+  const hitlTask = tasks
+    .split("\n## task-002")[0]
+    .replace("**Outcome**: First", "**Outcome**: First\n**Execution mode**: HITL");
+  await writeFile(path.join(buildFolder, "tasks.md"), hitlTask);
+
+  await assert.rejects(
+    runBuild({
+      buildFolder,
+      sourcePath: root,
+      workspace: "space-1",
+      pane: "pane-1",
+      agent: "supervisor",
+      registryRoot: path.join(root, "registry"),
+      adapters: {
+        createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
+        createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
+        createHerdrSupervisor: () => ({
+          ensureSupervisor: async () => {},
+          launchWorker: async () => { throw new Error("must not launch HITL task"); },
+        }),
+        selectTaskModel: async () => { throw new Error("must not select a model for HITL task"); },
+      },
+    }),
+    /human gate task-001/,
+  );
 });
 
 test("resume integrates a reported worker from its persisted worktree without relaunching", async () => {

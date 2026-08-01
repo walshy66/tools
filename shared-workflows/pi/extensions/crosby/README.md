@@ -10,7 +10,7 @@ Create a numbered build folder containing `tasks.md`:
 specs/001-example/tasks.md
 ```
 
-The task list declares the build ID, parent branch, stable task IDs, order, acceptance criteria, file scope, verification, instructions, and guardrails. Generate it with the shared `to-issues` workflow. Markdown is input; durable execution state lives in the Crosby registry.
+The task list declares the build ID, parent branch, stable task IDs, order, outcome, acceptance criteria, file scope, verification, and guardrails. An optional `### Instructions` section may add worker-specific direction; when omitted, Crosby uses the task outcome as its concise instruction. `Execution mode` defaults to `AFK`; a `HITL` task is a hard human gate and Crosby stops before model selection or worker launch. Directory scope may use a trailing `/` or the explicit recursive form `/**`; other globs remain invalid. Generate the build with the shared `to-issues` workflow. Markdown is input; durable execution state lives in the Crosby registry.
 
 ## Run
 
@@ -25,6 +25,17 @@ Run Crosby from a Pi session inside Herdr:
 `run` loads the build, creates or adopts the Herdr supervisor, creates the managed parent worktree, and launches the first task. `resume` reconciles durable state, integrates a completed report from its persisted task worktree without relaunching, and skips already integrated tasks. `status` reports the durable queue state without launching a worker.
 
 The parent tab remains interactive. The active task runs in its own visible Herdr tab and worktree, without stealing focus. Repository identity scopes managed worktree paths, and worker agent names are scoped to the build registry, so repeated build and task IDs from separate repositories cannot collide. Only one worker may own the queue gate at a time, and tasks advance strictly in authored order. Optional lifecycle-notification failures are retained as worker warnings and never reclassify a successfully launched worker as failed.
+
+## Worker model selection
+
+Before launching each new task, the parent Pi model assesses the task contract and chooses from a focused pool of authenticated, reasoning-capable models on the parent model's provider. For versioned OpenAI Codex models, the pool stays within the parent's model family (for example, the available GPT-5.6 variants) to avoid routing to older or account-incompatible entries. Crosby validates and persists the selection, starts Pi with the Windows-safe native argument `--approve`, and then configures the interactive worker before dispatching its task:
+
+```text
+/model <selected-provider/model>
+/thinking medium
+```
+
+Keeping model and thinking configuration out of native startup arguments avoids PowerShell `Start-Process` shim failures. A resumed worker reuses its persisted selection rather than reassessing. Missing parent-model context, authentication failure, an empty candidate pool, or an out-of-pool answer fails closed before worker launch. The operator sees the selected model and thinking level in the parent tab.
 
 ## Worker reports
 
@@ -57,7 +68,7 @@ Before integration Crosby:
 3. Commits task evidence if needed.
 4. Merges serially into the parent branch.
 
-Scope violations, failed verification, merge conflicts, blocked reports, failed reports, and cancelled reports stop the queue. Task worktrees and branches remain available for inspection. A worker-launch failure also retains its newly created Herdr tab so the operator can inspect the terminal evidence before explicit cleanup. Crosby does not auto-resolve conflicts, delete evidence, push, or create a PR.
+Scope violations, failed verification, merge conflicts, blocked reports, failed reports, and cancelled reports stop the queue. New managed parents are based on the operator checkout's exact committed `HEAD`, not a stale cached bare-repository `HEAD`. If an unstarted retained parent predates that source commit, Crosby fails closed and requires explicit cleanup rather than silently resetting evidence. Task worktrees and branches remain available for inspection. A worker-launch failure also retains its newly created Herdr tab so the operator can inspect the terminal evidence before explicit cleanup. Crosby does not auto-resolve conflicts, delete evidence, push, or create a PR.
 
 After a restart, Crosby adopts recorded Herdr workers when they are inspectable and never launches a duplicate for an uncertain active task. Herdr unavailability fails closed.
 

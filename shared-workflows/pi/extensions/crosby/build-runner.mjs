@@ -23,6 +23,15 @@ export function parseBuildCommandArgs(args) {
   return { mode, buildFolder: tokens[1] };
 }
 
+function validModelSelection(value) {
+  return value
+    && typeof value === "object"
+    && typeof value.model === "string"
+    && value.model.includes("/")
+    && value.thinking === "medium"
+    && value.source === "orchestrator";
+}
+
 function validTaskWorktree(value) {
   return value
     && typeof value === "object"
@@ -82,10 +91,24 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     spaceId: workspace,
   });
   const managed = await ops.createManagedRepository({ root, sourcePath: source, repositoryIdentity: identity });
-  const parent = await ops.createParentWorktree({ managedRepository: managed, parentKey: build.parentBranch, parentBranch: build.parentBranch });
+  const parent = await ops.createParentWorktree({
+    managedRepository: managed,
+    parentKey: build.parentBranch,
+    parentBranch: build.parentBranch,
+    baseRef: managed.sourceHead ?? undefined,
+  });
   const supervisor = ops.createHerdrSupervisor({ client: adapters.herdrClient, store, emitLifecycle: adapters.emitLifecycle });
   if (!supervisor || typeof supervisor.ensureSupervisor !== "function") throw new BuildRunnerError("A Herdr supervisor adapter is required.");
   await supervisor.ensureSupervisor({ workspace, pane, agent });
+  const initialRegistry = await readRegistry(store);
+  const hasExecutionEvidence = Object.values(initialRegistry.workers ?? {}).some((worker) =>
+    worker?.agent
+    || worker?.report
+    || !["prepared", "launch-failed"].includes(worker?.lifecycle),
+  );
+  if (managed.sourceHead && parent.baseSha && parent.baseSha !== managed.sourceHead && !hasExecutionEvidence) {
+    throw new BuildRunnerError("The managed parent predates committed source HEAD and has no accepted execution progress; explicit cleanup is required before a safe rerun.");
+  }
 
   const completed = [];
   for (const task of build.tasks) {
@@ -98,9 +121,29 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
       completed.push({ task, worker: currentWorker, report: currentWorker.report });
       continue;
     }
+    if (task.executionMode === "HITL") {
+      throw new BuildRunnerError(`Build reached human gate ${task.id}; explicit operator participation is required and no worker was launched.`);
+    }
     const hasReportedCompletion = currentWorker?.lifecycle === "reported" && currentWorker.report?.outcome === "complete";
     if (hasReportedCompletion && !validTaskWorktree(currentWorker.taskWorktree)) {
       throw new BuildRunnerError(`Worker ${task.id} reported completion without a persisted task worktree identity.`);
+    }
+    let modelSelection = currentWorker?.modelSelection;
+    if (!hasReportedCompletion && !validModelSelection(modelSelection)) {
+      if (typeof ops.selectTaskModel !== "function") {
+        throw new BuildRunnerError(`Task ${task.id} requires an orchestrator model selection before worker launch.`);
+      }
+      modelSelection = await ops.selectTaskModel({ task, build });
+      if (!validModelSelection(modelSelection)) {
+        throw new BuildRunnerError(`Task ${task.id} received an invalid orchestrator model selection.`);
+      }
+      await updateRegistry(store, (registry) => ({
+        ...registry,
+        workers: {
+          ...registry.workers,
+          [task.id]: { ...(registry.workers[task.id] ?? {}), taskId: task.id, modelSelection },
+        },
+      }));
     }
     let taskWorktree = currentWorker?.taskWorktree;
     if (!validTaskWorktree(taskWorktree)) {
@@ -130,6 +173,7 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
           task,
           cwd: taskWorktree.path,
           prompt: taskPrompt(build, task),
+          modelSelection,
           env: {
             CROSBY_REGISTRY_ROOT: root,
             CROSBY_REPOSITORY_ID: identity,

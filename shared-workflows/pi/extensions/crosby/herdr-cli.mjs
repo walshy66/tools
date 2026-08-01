@@ -14,6 +14,8 @@ function argumentsFor(operation, input) {
       return ["tab", "close", input.tab];
     case "startAgent":
       return ["agent", "start", input.name, "--kind", "pi", "--pane", input.pane, ...(input.agentArgs?.length ? ["--", ...input.agentArgs] : [])];
+    case "runPaneCommand":
+      return ["pane", "run", input.pane, input.command];
     case "promptAgent":
       return ["agent", "prompt", input.agent, input.prompt, ...(input.wait ? ["--wait"] : [])];
     case "waitForAgent":
@@ -43,6 +45,7 @@ export function createHerdrCliInvoker({ exec } = {}) {
     if (result.code !== 0) throw new Error(details || `Herdr ${operation} failed with exit code ${result.code}.`);
 
     if (operation === "readAgent") return { text: String(result.stdout ?? "") };
+    if (operation === "runPaneCommand") return { pane: input.pane };
 
     let raw;
     try {

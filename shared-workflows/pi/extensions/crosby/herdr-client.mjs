@@ -35,7 +35,7 @@ function responseWithState(value, operation) {
   return { ...response, state: agentState(response.state, operation) };
 }
 
-export function createHerdrClient({ invoke } = {}) {
+export function createHerdrClient({ invoke, platform = process.platform } = {}) {
   if (typeof invoke !== "function") fail("Herdr client requires an invoke(operation, input) function.");
 
   async function call(operation, input) {
@@ -85,14 +85,41 @@ export function createHerdrClient({ invoke } = {}) {
     },
 
     async startPiAgent({ pane, name, agentArgs } = {}) {
-      const input = { pane: text(pane, "pane"), kind: "pi" };
-      if (name !== undefined) input.name = text(name, "name");
-      if (agentArgs !== undefined) {
-        if (!Array.isArray(agentArgs) || agentArgs.some((argument) => typeof argument !== "string")) {
-          fail("agentArgs must be an array of strings.");
-        }
-        input.agentArgs = [...agentArgs];
+      const paneId = text(pane, "pane");
+      const agentName = name === undefined ? undefined : text(name, "name");
+      const args = agentArgs === undefined ? [] : agentArgs;
+      if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string")) {
+        fail("agentArgs must be an array of strings.");
       }
+
+      if (platform === "win32") {
+        if (args.some((argument) => !/^--[a-z0-9-]+$/i.test(argument))) {
+          fail("Windows shell Pi startup accepts only safe flag arguments; configure model and thinking after launch.");
+        }
+        await call("runPaneCommand", { pane: paneId, command: ["pi", ...args].join(" ") });
+        const deadline = Date.now() + 30_000;
+        let detected;
+        while (!detected) {
+          try {
+            detected = responseWithState(await call("inspectAgent", { agent: paneId }), "inspectAgent");
+          } catch (error) {
+            if (Date.now() >= deadline) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+        const response = agentName
+          ? responseWithState(await call("renameAgent", { agent: paneId, name: agentName }), "renameAgent")
+          : detected;
+        return {
+          ...response,
+          name: text(response.name, "Herdr detected agent name"),
+          pane: paneId,
+        };
+      }
+
+      const input = { pane: paneId, kind: "pi" };
+      if (agentName !== undefined) input.name = agentName;
+      if (agentArgs !== undefined) input.agentArgs = [...args];
       const response = responseWithState(await call("startAgent", input), "startAgent");
       return {
         ...response,
