@@ -56,7 +56,12 @@ test("persists the supervisor identity and launches one visible worker without f
   const supervisor = createHerdrSupervisor({ client, store });
 
   await supervisor.ensureSupervisor({ workspace: "space-1", pane: "parent-pane", agent: "parent-agent" });
-  const worker = await supervisor.launchWorker({ task, cwd: "/work/task-001", prompt: "Implement task-001" });
+  const worker = await supervisor.launchWorker({
+    task,
+    cwd: "/work/task-001",
+    prompt: "Implement task-001",
+    modelSelection: { model: "openai-codex/gpt-5.6-luna", thinking: "medium", source: "orchestrator" },
+  });
   const registry = await readRegistry(store);
 
   assert.deepEqual(registry.supervisor, {
@@ -70,7 +75,11 @@ test("persists the supervisor identity and launches one visible worker without f
   assert.equal(calls[0][1].focus, false);
   assert.equal(calls[1][0], "startPiAgent");
   assert.deepEqual(calls[1][1].agentArgs, ["--approve"]);
-  assert.deepEqual(calls[2], ["promptAgent", { agent: worker.agent, prompt: "Implement task-001", wait: false }]);
+  assert.deepEqual(calls.slice(2), [
+    ["promptAgent", { agent: worker.agent, prompt: "/model openai-codex/gpt-5.6-luna", wait: false }],
+    ["promptAgent", { agent: worker.agent, prompt: "/thinking medium", wait: false }],
+    ["promptAgent", { agent: worker.agent, prompt: "Implement task-001", wait: false }],
+  ]);
 });
 
 test("scopes worker agent names to the build registry", async () => {

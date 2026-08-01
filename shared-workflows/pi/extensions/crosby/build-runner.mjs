@@ -159,7 +159,7 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
           task,
           cwd: taskWorktree.path,
           prompt: taskPrompt(build, task),
-          agentArgs: ["--model", modelSelection.model, "--thinking", "medium", "--approve"],
+          modelSelection,
           env: {
             CROSBY_REGISTRY_ROOT: root,
             CROSBY_REPOSITORY_ID: identity,

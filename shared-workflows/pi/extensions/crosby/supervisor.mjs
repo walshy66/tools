@@ -23,6 +23,16 @@ function taskId(task) {
   return text(typeof task === "string" ? task : task?.id, "task ID");
 }
 
+function workerModelSelection(value, id) {
+  if (value === undefined) return null;
+  const model = String(value?.model ?? "").trim();
+  if (!/^[A-Za-z0-9._~:/-]+$/.test(model) || !model.includes("/")) {
+    fail(`${id} model selection must be a safe provider/model identifier.`);
+  }
+  if (value?.thinking !== "medium") fail(`${id} worker thinking must be medium.`);
+  return { model, thinking: "medium" };
+}
+
 function workerAgentName(store, id) {
   const suffix = createHash("sha256")
     .update([store.repositoryIdentity, store.parentKey, store.buildId, store.spaceId].join("\0"))
@@ -61,10 +71,11 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
     return { supervisor: identity, adopted: false };
   }
 
-  async function launchWorker({ task, cwd, prompt, agentArgs, env } = {}) {
+  async function launchWorker({ task, cwd, prompt, modelSelection, env } = {}) {
     const id = taskId(task);
     const workingDirectory = text(cwd, `${id} worktree`);
     const workerPrompt = text(prompt, `${id} prompt`);
+    const workerModel = workerModelSelection(modelSelection, id);
     let registry = await readRegistry(store);
     const existing = registry.workers[id];
     if (existing?.agent && ["launching", "working"].includes(existing.lifecycle)) {
@@ -96,10 +107,11 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
         ...current,
         workers: { ...current.workers, [id]: { ...current.workers[id], tab: tab.tab, pane: tab.pane } },
       }));
-      const baseArgs = agentArgs === undefined || (Array.isArray(agentArgs) && agentArgs.length === 0)
-        ? ["--approve"]
-        : agentArgs;
-      const started = await client.startPiAgent({ pane: tab.pane, name: workerAgentName(store, id), agentArgs: baseArgs });
+      const started = await client.startPiAgent({ pane: tab.pane, name: workerAgentName(store, id), agentArgs: ["--approve"] });
+      if (workerModel) {
+        await client.promptAgent({ agent: started.name, prompt: `/model ${workerModel.model}`, wait: false });
+        await client.promptAgent({ agent: started.name, prompt: `/thinking ${workerModel.thinking}`, wait: false });
+      }
       await client.promptAgent({ agent: started.name, prompt: workerPrompt, wait: false });
       let worker = await updateRegistry(store, (current) => ({
         ...current,

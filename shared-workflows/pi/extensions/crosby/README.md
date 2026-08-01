@@ -28,13 +28,14 @@ The parent tab remains interactive. The active task runs in its own visible Herd
 
 ## Worker model selection
 
-Before launching each new task, the parent Pi model assesses the task contract and chooses from a focused pool of authenticated, reasoning-capable models on the parent model's provider. For versioned OpenAI Codex models, the pool stays within the parent's model family (for example, the available GPT-5.6 variants) to avoid routing to older or account-incompatible entries. Crosby validates that the answer is in this allowed pool, persists the selection in the worker registry, and starts Pi with:
+Before launching each new task, the parent Pi model assesses the task contract and chooses from a focused pool of authenticated, reasoning-capable models on the parent model's provider. For versioned OpenAI Codex models, the pool stays within the parent's model family (for example, the available GPT-5.6 variants) to avoid routing to older or account-incompatible entries. Crosby validates and persists the selection, starts Pi with the Windows-safe native argument `--approve`, and then configures the interactive worker before dispatching its task:
 
 ```text
-pi --model <selected-provider/model> --thinking medium --approve
+/model <selected-provider/model>
+/thinking medium
 ```
 
-A resumed worker reuses its persisted selection rather than reassessing. Missing parent-model context, authentication failure, an empty candidate pool, or an out-of-pool answer fails closed before worker launch. The operator sees the selected model and thinking level in the parent tab.
+Keeping model and thinking configuration out of native startup arguments avoids PowerShell `Start-Process` shim failures. A resumed worker reuses its persisted selection rather than reassessing. Missing parent-model context, authentication failure, an empty candidate pool, or an out-of-pool answer fails closed before worker launch. The operator sees the selected model and thinking level in the parent tab.
 
 ## Worker reports
 

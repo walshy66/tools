@@ -58,11 +58,11 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   const storeRoot = path.join(root, "registry");
   const supervisor = {
     ensureSupervisor: async () => {},
-    launchWorker: async ({ task, prompt, agentArgs }) => {
+    launchWorker: async ({ task, prompt, modelSelection }) => {
       assert.match(prompt, /Read the complete task contract from .*tasks\.md/);
       assert.doesNotMatch(prompt, /First works\.|Second works\./);
       const expectedModel = task.id === "task-001" ? "openai-codex/gpt-5.6-luna" : "openai-codex/gpt-5.6-terra";
-      assert.deepEqual(agentArgs, ["--model", expectedModel, "--thinking", "medium", "--approve"]);
+      assert.deepEqual(modelSelection, { model: expectedModel, thinking: "medium", source: "orchestrator" });
       calls.push(`launch:${task.id}`);
       return { agent: task.id };
     },
