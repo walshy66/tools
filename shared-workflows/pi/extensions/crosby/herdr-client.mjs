@@ -145,6 +145,17 @@ export function createHerdrClient({ invoke } = {}) {
       return { ...response, name: text(response.name, "Herdr renameAgent response name") };
     },
 
+    async sendAgentKeys({ agent, keys } = {}) {
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== "string" || !key.trim())) {
+        fail("keys must be a non-empty array of strings.");
+      }
+      return responseWithState(await call("sendAgentKeys", { agent: text(agent, "agent"), keys: [...keys] }), "sendAgentKeys");
+    },
+
+    async stopAgent({ agent } = {}) {
+      return responseWithState(await call("stopAgent", { agent: text(agent, "agent") }), "stopAgent");
+    },
+
     async inspectAgent({ agent } = {}) {
       const response = responseWithState(await call("inspectAgent", { agent: text(agent, "agent") }), "inspectAgent");
       return { ...response, name: text(response.name, "Herdr inspectAgent response name") };

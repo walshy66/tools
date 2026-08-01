@@ -41,6 +41,8 @@ test("exposes validated agent control operations", async () => {
     readAgent: { text: "worker output" },
     renameAgent: { name: "coa-364-worker", state: "idle" },
     inspectAgent: { name: "coa-364-worker", state: "blocked" },
+    sendAgentKeys: { state: "working" },
+    stopAgent: { state: "done" },
   });
   const client = createHerdrClient({ invoke: fake.invoke });
 
@@ -54,6 +56,8 @@ test("exposes validated agent control operations", async () => {
   assert.deepEqual(await client.readAgent({ agent: "coa-364" }), { text: "worker output" });
   assert.deepEqual(await client.renameAgent({ agent: "coa-364", name: "coa-364-worker" }), { name: "coa-364-worker", state: "idle" });
   assert.deepEqual(await client.inspectAgent({ agent: "coa-364-worker" }), { name: "coa-364-worker", state: "blocked" });
+  assert.deepEqual(await client.sendAgentKeys({ agent: "coa-364-worker", keys: ["ctrl-c"] }), { state: "working" });
+  assert.deepEqual(await client.stopAgent({ agent: "coa-364-worker" }), { state: "done" });
 });
 
 test("fails closed with recovery guidance for adapter failures and malformed Herdr responses", async () => {

@@ -72,11 +72,20 @@ function blockedReport(report) {
   };
 }
 
+function stoppedReport(report, outcome) {
+  return {
+    outcome,
+    summary: text(report.summary, "summary"),
+    recoveryNotes: stringList(report.recoveryNotes, "recoveryNotes", { required: true }),
+  };
+}
+
 export function validateWorkerReport(value) {
   const report = object(value);
   if (report.outcome === "complete") return completionReport(report);
   if (report.outcome === "blocked") return blockedReport(report);
-  fail("outcome must be 'complete' or 'blocked'.");
+  if (report.outcome === "failed" || report.outcome === "cancelled") return stoppedReport(report, report.outcome);
+  fail("outcome must be 'complete', 'blocked', 'failed', or 'cancelled'.");
 }
 
 export function isWorkerCompletionReport(value) {

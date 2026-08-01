@@ -26,6 +26,9 @@ import {
 } from "./scheduler.mjs";
 import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment, buildSupervisorStatusReport } from "./linear-reporting.mjs";
 import { parseProjectConfig } from "./project-config.mjs";
+import { parseBuildCommandArgs, readBuildStatus, runBuild } from "./build-runner.mjs";
+import { readRegistry } from "./registry.mjs";
+import { integrateTask } from "./integration.mjs";
 
 function getLinearInvocation(args: string[]) {
   const configured = process.env.LINEAR_BIN?.trim();
@@ -747,6 +750,11 @@ const workerBlockedReportSchema = Type.Object({
   recoveryNotes: Type.Array(Type.String()),
   requestHerdrBlocked: Type.Literal(true),
 });
+const workerStoppedReportSchema = Type.Object({
+  outcome: Type.Union([Type.Literal("failed"), Type.Literal("cancelled")]),
+  summary: Type.String(),
+  recoveryNotes: Type.Array(Type.String()),
+});
 
 function registerWorkerReportTool(pi: ExtensionAPI) {
   const workerEnvironmentReady = ["CROSBY_REGISTRY_ROOT", "CROSBY_REPOSITORY_ID", "CROSBY_PARENT_KEY", "CROSBY_TASK_KEY"].every((name) => process.env[name]?.trim());
@@ -758,7 +766,7 @@ function registerWorkerReportTool(pi: ExtensionAPI) {
     description: "Submit the final validated completion or human-block report for this Crosby task. This is the worker's final action.",
     promptSnippet: "Submit the final Crosby worker report",
     promptGuidelines: ["Use crosby_worker_report as the final action for a Crosby task; report a human block instead of guessing or continuing unsafely."],
-    parameters: Type.Union([workerCompletionReportSchema, workerBlockedReportSchema]),
+    parameters: Type.Union([workerCompletionReportSchema, workerBlockedReportSchema, workerStoppedReportSchema]),
     async execute(_toolCallId, params) {
       const emit = (pi as any).events?.emit;
       if (params.outcome === "blocked" && typeof emit !== "function") {
@@ -846,76 +854,51 @@ export default function crosbyExtension(pi: ExtensionAPI) {
   registerWorkerReportTool(pi);
   registerSupervisorTools(pi);
   pi.registerCommand("crosby", {
-    description: "Execute parent child-work, watch Execute parents, or explicitly push/review a parent PR",
+    description: "Run or resume a sequential Herdr-visible Crosby build from a local build folder",
     handler: async (args, ctx) => {
       try {
-        const command = parseCrosbyCommandArgs(args);
-
-        if (command.mode === "watch") {
-          const runtime = await createVisibleRuntime(pi);
-          ctx.ui.notify("Crosby watch mode started. Reconciling and dispatching Herdr workers every 60s.", "success");
+        const command = parseBuildCommandArgs(args);
+        const herdrContext = requireCrosbyHerdrContext();
+        const invokeHerdrCli = createHerdrCliInvoker({ exec: (commandName: string, commandArgs: string[]) => pi.exec(commandName, commandArgs) });
+        const herdr = createHerdrClient({ invoke: invokeHerdrCli });
+        const registryRoot = path.join(homedir(), ".pi", "crosby");
+        const sourcePath = process.cwd();
+        const identity = await resolveRepositoryIdentity(pi, sourcePath);
+        if (command.mode === "status") {
+          const status = await readBuildStatus({ buildFolder: command.buildFolder, sourcePath, workspace: herdrContext.workspace, registryRoot, repositoryIdentity: identity });
+          ctx.ui.notify(`Crosby ${status.build.buildId}: ${status.registry.queueState}; current task: ${status.registry.currentTask ?? "none"}.`, "info");
+          return;
+        }
+        const waitForReport = async ({ task, store }: any) => {
           while (true) {
-            try {
-              const queues = await loadExecuteParentQueuesFromLinear(pi);
-              const cycle = await runVisibleSchedulingCycle(pi, runtime, queues, "watch");
-              if (cycle.settled.length || cycle.launched.length) {
-                ctx.ui.notify(`Crosby reconciled ${cycle.settled.length} and launched ${cycle.launched.length} worker(s).`, "success");
-              }
-            } catch (error) {
-              ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-            }
-            await new Promise((resolve) => setTimeout(resolve, 60000));
+            const registry = await readRegistry(store);
+            const worker = registry.workers?.[task.id];
+            if (worker?.report && ["complete", "blocked", "failed", "cancelled"].includes(worker.report.outcome)) return worker.report;
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
-        }
-
-        const issueKey = command.issueKey;
-        const queue = await fetchParentQueue(issueKey, (key) => loadIssueFromLinear(pi, key));
-
-        if (command.mode === "push") {
-          const pullRequest = await publishParentPullRequest(queue, [], {
-            ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
-            assertCleanWorkingTree: ({ cwd }) => assertCleanWorkingTree(pi, cwd, "push"),
-            readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
-            pushBranch: ({ branchName, cwd }) => pushGitBranch(pi, cwd, branchName),
-            getPullRequest: ({ branchName, cwd, allowMissing }) => getPullRequestForBranch(pi, branchName, cwd, { allowMissing }),
-            createPullRequest: ({ title, body, branchName, cwd }) => createPullRequest(pi, title, body, branchName, cwd),
-            updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
-            addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-          });
-          ctx.ui.notify(`Pushed ${queue.parent.identifier} and synced PR ${pullRequest?.url ?? ""}.`, "success");
-          return;
-        }
-
-        if (command.mode === "review") {
-          const review = await reviewParentPullRequest(queue, [], {
-            ensureParentBranch: ({ parent, cwd }) => ensureParentBranch(pi, parent, cwd),
-            assertCleanWorkingTree: ({ cwd }) => assertCleanWorkingTree(pi, cwd, "review"),
-            getPullRequest: ({ branchName, cwd, allowMissing }) => getPullRequestForBranch(pi, branchName, cwd, { allowMissing }),
-            readImplementationSummary: ({ cwd }) => readImplementationSummary(cwd),
-            updatePullRequest: ({ prNumber, body, cwd }) => updatePullRequestBody(pi, prNumber, body, cwd),
-            runClaudeReview: ({ prompt, cwd }) => runClaudeReviewWorker(pi, prompt, cwd),
-            addPullRequestComment: ({ prNumber, body, cwd }) => addPullRequestComment(pi, prNumber, body, cwd),
-            addParentComment: (targetIssueKey, body) => addIssueComment(pi, targetIssueKey, body),
-          });
-          ctx.ui.notify(`Reviewed ${queue.parent.identifier}. PR: ${review.pullRequest?.url ?? "unknown"}.`, "success");
-          return;
-        }
-
-        const runtime = await createVisibleRuntime(pi);
-        const cycle = await runVisibleSchedulingCycle(pi, runtime, [queue], "manual");
-        pi.appendEntry("crosby-queue-loaded", {
-          issueKey,
-          parentTitle: queue.parent.title,
-          childCount: queue.children.length,
-          childKeys: queue.children.map((child) => child.identifier),
-          settledChildKeys: cycle.settled.map((entry) => entry.child.identifier),
-          launchedChildKeys: cycle.launched.map((entry) => entry.child.identifier),
-          loadedAt: new Date().toISOString(),
+        };
+        const result = await runBuild({
+          buildFolder: command.buildFolder,
+          sourcePath,
+          workspace: herdrContext.workspace,
+          pane: herdrContext.pane,
+          agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor",
+          registryRoot,
+          repositoryIdentity: identity,
+          adapters: {
+            herdrClient: herdr,
+            waitForReport,
+            integrateTask: (input: any) => integrateTask(input),
+            emitLifecycle: (event: any) => pi.appendEntry("crosby-worker-lifecycle", event),
+          },
         });
-        ctx.ui.notify(
-          `Crosby reconciled ${cycle.settled.length} and launched ${cycle.launched.length} worker(s) under ${queue.parent.identifier}.`,
-          "success",
-        );
+        pi.appendEntry("crosby-build-complete", {
+          buildId: result.build.buildId,
+          parentBranch: result.build.parentBranch,
+          completedTaskIds: result.completed.map((entry: any) => entry.task.id),
+          completedAt: new Date().toISOString(),
+        });
+        ctx.ui.notify(`Crosby ${command.mode} completed ${result.completed.length} task(s). Parent branch is ready for review; no PR was created.`, "success");
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }

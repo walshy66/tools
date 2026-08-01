@@ -57,6 +57,18 @@ test("persists blocked reports and requests Herdr blocked state", async () => {
   assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, "blocked");
 });
 
+test("persists failed and cancelled terminal outcomes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-worker-report-"));
+  const env = environment(root);
+  const store = createRegistryStore({ root, repositoryIdentity: env.CROSBY_REPOSITORY_ID, parentKey: env.CROSBY_PARENT_KEY });
+  await updateWorkerRecord(store, env.CROSBY_TASK_KEY, { lifecycle: "running" });
+
+  for (const outcome of ["failed", "cancelled"]) {
+    await persistWorkerReport({ report: { outcome, summary: `Worker ${outcome}.`, recoveryNotes: ["Inspect evidence."] }, env });
+    assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, outcome);
+  }
+});
+
 test("refuses a report from an unregistered worker", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "crosby-worker-report-"));
   await assert.rejects(() => persistWorkerReport({ report: completion, env: environment(root) }), /no registered Crosby worker/i);
