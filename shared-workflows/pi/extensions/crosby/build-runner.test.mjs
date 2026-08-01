@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseBuildCommandArgs, runBuild } from "./build-runner.mjs";
+import { createRegistryStore, readRegistry, updateRegistry } from "./registry.mjs";
 
 const tasks = `# Build: 001-example
 
@@ -85,4 +86,58 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   });
   assert.deepEqual(calls, ["launch:task-001", "report:task-001", "integrate:task-001", "launch:task-002", "report:task-002", "integrate:task-002"]);
   assert.equal(result.completed.length, 2);
+  assert.deepEqual((await readRegistry(result.registry)).workers["task-001"].taskWorktree, {
+    path: "/work/task-001",
+    branch: "crosby/001-example-task-001",
+    baseSha: "base",
+  });
+});
+
+test("resume integrates a reported worker from its persisted worktree without relaunching", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-resume-"));
+  const buildFolder = path.join(root, "specs", "001-example");
+  await mkdir(buildFolder, { recursive: true });
+  await writeFile(path.join(buildFolder, "tasks.md"), tasks.split("\n## task-002")[0]);
+  const storeRoot = path.join(root, "registry");
+  const store = createRegistryStore({
+    root: storeRoot,
+    repositoryIdentity: root,
+    parentKey: "crosby/001-example",
+    buildId: "001-example",
+    buildFolder,
+    parentBranch: "crosby/001-example",
+    spaceId: "space-1",
+  });
+  const taskWorktree = { path: "/work/task-001", branch: "crosby/001-example-task-001", baseSha: "base" };
+  const report = { outcome: "complete", summary: "done" };
+  await updateRegistry(store, (registry) => ({
+    ...registry,
+    workers: { "task-001": { taskId: "task-001", lifecycle: "reported", report, taskWorktree } },
+  }));
+  const calls = [];
+
+  const result = await runBuild({
+    buildFolder,
+    sourcePath: root,
+    workspace: "space-1",
+    pane: "pane-1",
+    agent: "supervisor",
+    registryRoot: storeRoot,
+    adapters: {
+      createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
+      createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
+      createTaskWorktree: async () => { throw new Error("must reuse persisted worktree"); },
+      createHerdrSupervisor: () => ({
+        ensureSupervisor: async () => {},
+        launchWorker: async () => { throw new Error("must not relaunch reported worker"); },
+      }),
+      waitForReport: async () => { throw new Error("must reuse persisted report"); },
+      integrateTask: async (input) => { calls.push(input); },
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].taskWorktree, taskWorktree);
+  assert.deepEqual(calls[0].report, report);
+  assert.equal(result.completed.length, 1);
 });

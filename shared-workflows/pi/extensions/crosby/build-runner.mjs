@@ -23,6 +23,12 @@ export function parseBuildCommandArgs(args) {
   return { mode, buildFolder: tokens[1] };
 }
 
+function validTaskWorktree(value) {
+  return value
+    && typeof value === "object"
+    && [value.path, value.branch, value.baseSha].every((field) => typeof field === "string" && field.trim());
+}
+
 function taskPrompt(build, task) {
   const taskListPath = path.join(build.folder, "tasks.md");
   return [
@@ -87,35 +93,59 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     if (["blocked", "failed", "cancelled"].includes(current.queueState)) {
       throw new BuildRunnerError(`Build stopped at ${task.id}; queue is ${current.queueState}.`);
     }
-    if (["integrated", "reported"].includes(current.workers?.[task.id]?.lifecycle) && current.workers[task.id]?.report?.outcome === "complete") {
-      completed.push({ task, worker: current.workers[task.id], report: current.workers[task.id].report });
+    const currentWorker = current.workers?.[task.id];
+    if (currentWorker?.lifecycle === "integrated" && currentWorker.report?.outcome === "complete") {
+      completed.push({ task, worker: currentWorker, report: currentWorker.report });
       continue;
     }
-    const taskWorktree = await ops.createTaskWorktree({
-      managedRepository: managed,
-      parentKey: build.parentBranch,
-      childKey: task.id,
-      taskBranch: `${build.parentBranch}-${task.id}`,
-      baseRef: parent.branch,
-    });
-    const worker = await supervisor.launchWorker({
-      task,
-      cwd: taskWorktree.path,
-      prompt: taskPrompt(build, task),
-      env: {
-        CROSBY_REGISTRY_ROOT: root,
-        CROSBY_REPOSITORY_ID: identity,
-        CROSBY_PARENT_KEY: build.parentBranch,
-        CROSBY_TASK_KEY: task.id,
-        CROSBY_BUILD_ID: build.buildId,
-        CROSBY_BUILD_FOLDER: build.folder,
-        CROSBY_PARENT_BRANCH: build.parentBranch,
-        HERDR_WORKSPACE_ID: workspace,
-      },
-    });
-    const report = adapters.waitForReport
-      ? await adapters.waitForReport({ task, worker, store })
-      : null;
+    const hasReportedCompletion = currentWorker?.lifecycle === "reported" && currentWorker.report?.outcome === "complete";
+    if (hasReportedCompletion && !validTaskWorktree(currentWorker.taskWorktree)) {
+      throw new BuildRunnerError(`Worker ${task.id} reported completion without a persisted task worktree identity.`);
+    }
+    let taskWorktree = currentWorker?.taskWorktree;
+    if (!validTaskWorktree(taskWorktree)) {
+      taskWorktree = await ops.createTaskWorktree({
+        managedRepository: managed,
+        parentKey: build.parentBranch,
+        childKey: task.id,
+        taskBranch: `${build.parentBranch}-${task.id}`,
+        baseRef: parent.branch,
+      });
+      await updateRegistry(store, (registry) => ({
+        ...registry,
+        workers: {
+          ...registry.workers,
+          [task.id]: {
+            ...(registry.workers[task.id] ?? {}),
+            taskId: task.id,
+            lifecycle: registry.workers[task.id]?.lifecycle ?? "prepared",
+            taskWorktree,
+          },
+        },
+      }));
+    }
+    const worker = hasReportedCompletion
+      ? currentWorker
+      : await supervisor.launchWorker({
+          task,
+          cwd: taskWorktree.path,
+          prompt: taskPrompt(build, task),
+          env: {
+            CROSBY_REGISTRY_ROOT: root,
+            CROSBY_REPOSITORY_ID: identity,
+            CROSBY_PARENT_KEY: build.parentBranch,
+            CROSBY_TASK_KEY: task.id,
+            CROSBY_BUILD_ID: build.buildId,
+            CROSBY_BUILD_FOLDER: build.folder,
+            CROSBY_PARENT_BRANCH: build.parentBranch,
+            HERDR_WORKSPACE_ID: workspace,
+          },
+        });
+    const report = hasReportedCompletion
+      ? currentWorker.report
+      : adapters.waitForReport
+        ? await adapters.waitForReport({ task, worker, store })
+        : null;
     if (!report) throw new BuildRunnerError(`Worker ${task.id} has not submitted a terminal report; queue remains stopped.`);
     if (report.outcome !== "complete") throw new BuildRunnerError(`Worker ${task.id} reported ${report.outcome}; queue stopped.`);
     if (typeof adapters.integrateTask !== "function") throw new BuildRunnerError("A task integration adapter is required before advancing the build.");
