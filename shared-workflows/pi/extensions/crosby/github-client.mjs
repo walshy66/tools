@@ -19,9 +19,15 @@ export function createGitHubClient({ exec, repository } = {}) {
   if (typeof exec !== "function") fail("client requires an exec(command, args, options) function.");
   const expectedRepository = normalizeRepositoryUrl(repository);
   const run = async (args, options) => {
-    const result = await exec("gh", args, options);
-    if (result.code !== 0) fail(details(result) || `gh ${args.join(" ")} failed with exit code ${result.code}.`);
-    return result;
+    const transient = /\b(eof|timeout|timed out|connection reset|connection refused|temporary failure|service unavailable|502|503|504)\b/i;
+    let result;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      result = await exec("gh", args, options);
+      if (result.code === 0) return result;
+      if (!transient.test(details(result)) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, [250, 750, 1500][attempt]));
+    }
+    fail(details(result) || `gh ${args.join(" ")} failed with exit code ${result.code}.`);
   };
   const json = async (args, options) => {
     const result = await run(args, options);
@@ -46,6 +52,11 @@ export function createGitHubClient({ exec, repository } = {}) {
     return { parent, children: parent.children };
   }
 
+  async function loadExecuteParentQueues() {
+    const issues = await json(["issue", "list", "--state", "open", "--limit", "100", "--label", "type:parent", "--label", "status:execute", "--json", "number"]);
+    return Promise.all((Array.isArray(issues) ? issues : []).map((issue) => loadParentQueue(issue.number)));
+  }
+
   async function moveIssue(issueRef, state) {
     const args = editLabelArguments(issueRef, state);
     if (args) await run(args);
@@ -55,5 +66,5 @@ export function createGitHubClient({ exec, repository } = {}) {
     await run(["issue", "comment", "add", normalizeIssueRef(issueRef), "--body", String(body)]);
   }
 
-  return { loadIssue, loadParentQueue, moveIssue, addComment, repository: expectedRepository };
+  return { loadIssue, loadParentQueue, loadExecuteParentQueues, moveIssue, addComment, repository: expectedRepository };
 }

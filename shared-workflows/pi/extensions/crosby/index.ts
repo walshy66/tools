@@ -33,6 +33,7 @@ import { readRegistry } from "./registry.mjs";
 import { integrateTask } from "./integration.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { writeGitHubBuild } from "./github-build.mjs";
+import { buildGitHubChildProgress, buildGitHubParentSummary } from "./github-reporting.mjs";
 import {
   createCrosbyDashboard,
   markDashboardExecutionStarted,
@@ -1022,7 +1023,14 @@ export default function crosbyExtension(pi: ExtensionAPI) {
               if (githubClient) {
                 const issueNumber = task.id.replace(/^task-0*/, "");
                 await githubClient.moveIssue(issueNumber, "Done");
-                await githubClient.addComment(issueNumber, `Crosby completed this task. Commit: ${report.changes?.commit ?? "recorded in the durable worktree"}.`);
+                await githubClient.addComment(issueNumber, buildGitHubChildProgress({
+                  child: { identifier: `#${issueNumber}` },
+                  outcome: report.outcome,
+                  summary: report.summary,
+                  changes: report.changes?.paths ?? [report.changes?.commit ?? "recorded in the durable worktree"],
+                  verification: report.verification?.map((entry: any) => `${entry.command}: ${entry.result}`),
+                  recoveryNotes: report.risks,
+                }));
               }
             },
             onProgress: async (progress: any) => {
@@ -1038,7 +1046,7 @@ export default function crosbyExtension(pi: ExtensionAPI) {
         if (githubClient && githubQueue) {
           const refreshed = await githubClient.loadParentQueue(githubQueue.parent.identifier);
           if (refreshed.children.every((child: any) => child.state.name === "Done")) {
-            await githubClient.addComment(refreshed.parent.identifier, `Crosby completed all child tasks for ${refreshed.parent.title}.`);
+            await githubClient.addComment(refreshed.parent.identifier, buildGitHubParentSummary({ parent: refreshed.parent, children: refreshed.children.filter((child: any) => child.state.name === "Done") }));
             await githubClient.moveIssue(refreshed.parent.identifier, "Review");
           }
         }
