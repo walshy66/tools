@@ -34,6 +34,7 @@ import { integrateTask } from "./integration.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { writeGitHubBuild } from "./github-build.mjs";
 import { buildGitHubChildProgress, buildGitHubParentSummary } from "./github-reporting.mjs";
+import { parseGitHubCommand, runGitHubWatch } from "./github-actions.mjs";
 import {
   createCrosbyDashboard,
   markDashboardExecutionStarted,
@@ -933,9 +934,32 @@ export default function crosbyExtension(pi: ExtensionAPI) {
       let githubQueue: any;
       let dashboardController: any;
       try {
-        const githubIssue = parseGitHubIssueInvocation(args);
+        const githubCommand = parseGitHubCommand(args);
+        const githubIssue = githubCommand?.mode === "parent" ? githubCommand.issueRef : parseGitHubIssueInvocation(args);
         const sourcePath = process.cwd();
         const identity = await resolveRepositoryIdentity(pi, sourcePath);
+        if (githubCommand?.mode === "push" || githubCommand?.mode === "review") {
+          githubClient = createGitHubClient({ repository: identity, exec: (name: string, ghArgs: string[]) => pi.exec(name, ghArgs, { cwd: sourcePath }) });
+          githubQueue = await githubClient.loadParentQueue(githubCommand.issueRef);
+          const operations: any = {
+            routing: { cwd: sourcePath },
+            ensureParentBranch: ({ parent, cwd }: any) => ensureParentBranch(pi, parent, cwd),
+            assertCleanWorkingTree: ({ cwd, command: action }: any) => assertCleanWorkingTree(pi, cwd, action),
+            readImplementationSummary: ({ cwd }: any) => readImplementationSummary(cwd),
+            pushBranch: ({ branchName, cwd }: any) => pushGitBranch(pi, cwd, branchName),
+            getPullRequest: ({ branchName, cwd, allowMissing }: any) => getPullRequestForBranch(pi, branchName, cwd, { allowMissing }),
+            createPullRequest: ({ title, body, branchName, cwd }: any) => createPullRequest(pi, title, body, branchName, cwd),
+            updatePullRequest: ({ prNumber, body, cwd }: any) => updatePullRequestBody(pi, prNumber, body, cwd),
+            addParentComment: (key: string, body: string) => addIssueComment(pi, key, body),
+            addPullRequestComment: ({ prNumber, body, cwd }: any) => addPullRequestComment(pi, prNumber, body, cwd),
+            runClaudeReview: ({ prompt, cwd }: any) => runClaudeReviewWorker(pi, prompt, cwd),
+          };
+          const result = githubCommand.mode === "push"
+            ? await publishParentPullRequest(githubQueue, [], operations)
+            : await reviewParentPullRequest(githubQueue, [], operations);
+          ctx.ui.notify(`Crosby ${githubCommand.mode} completed for ${githubQueue.parent.identifier}: ${result?.url ?? result?.pullRequest?.url ?? "done"}.`, "success");
+          return;
+        }
         if (githubIssue) {
           githubClient = createGitHubClient({ repository: identity, exec: (name: string, ghArgs: string[]) => pi.exec(name, ghArgs, { cwd: sourcePath }) });
           githubQueue = await githubClient.loadParentQueue(githubIssue);

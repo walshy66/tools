@@ -577,6 +577,7 @@ function getQueueRoutingTarget(queue) {
 }
 
 function resolveQueueWorkingDirectory(queue, routingOptions) {
+  if (routingOptions?.cwd) return { cwd: routingOptions.cwd, label: null };
   return resolveIssueWorkingDirectory(getQueueRoutingTarget(queue), routingOptions);
 }
 
