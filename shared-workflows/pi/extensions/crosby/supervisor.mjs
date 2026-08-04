@@ -109,7 +109,7 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
 
     let tab;
     try {
-      tab = await client.createTaskTab({ workspace: store.spaceId, label: id, cwd: workingDirectory, focus: false, env });
+      tab = await client.createTaskTab({ workspace: store.spaceId, label: task?.tabLabel ?? `Task ${id}`, cwd: workingDirectory, focus: false, env });
       await updateRegistry(store, (current) => ({
         ...current,
         workers: { ...current.workers, [id]: { ...current.workers[id], tab: tab.tab, pane: tab.pane } },

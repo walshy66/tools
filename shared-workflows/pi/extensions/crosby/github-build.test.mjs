@@ -8,6 +8,7 @@ const body = `## Outcome\nImplement the adapter.\n\n## Acceptance Criteria\n- Pa
 test("maps GitHub issue numbers to stable local task IDs", () => {
   assert.equal(taskIdForIssue({ number: 17 }), "task-017");
   assert.equal(issueToBuildTask(child(17, body), 0).id, "task-017");
+  assert.equal(issueToBuildTask(child(17, body), 0).tabLabel, "Task #17");
 });
 
 test("renders a valid local build contract from a GitHub queue", () => {

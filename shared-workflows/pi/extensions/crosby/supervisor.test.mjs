@@ -73,6 +73,7 @@ test("persists the supervisor identity and launches one visible worker without f
   assert.match(worker.agent, /^task-001-[a-f0-9]{8}$/);
   assert.equal(calls[0][0], "createTaskTab");
   assert.equal(calls[0][1].focus, false);
+  assert.equal(calls[0][1].label, "Task task-001");
   assert.equal(calls[1][0], "startPiAgent");
   assert.deepEqual(calls[1][1].agentArgs, [
     "--approve",
