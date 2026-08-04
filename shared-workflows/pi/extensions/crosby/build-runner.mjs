@@ -246,6 +246,9 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
       const workers = { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "integrated", report } };
       return { ...registry, workers };
     });
+    if (typeof adapters.onTaskIntegrated === "function") {
+      await adapters.onTaskIntegrated({ task, taskWorktree, parentWorktree: parent, report, registry: updatedRegistry });
+    }
     completed.push({ task, worker, report });
     if (typeof ops.onProgress === "function") {
       await ops.onProgress(summarizeBuildProgress({ build, registry: updatedRegistry }));

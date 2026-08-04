@@ -31,6 +31,8 @@ import { parseProjectConfig } from "./project-config.mjs";
 import { formatBuildProgress, parseBuildCommandArgs, readBuildStatus, runBuild } from "./build-runner.mjs";
 import { readRegistry } from "./registry.mjs";
 import { integrateTask } from "./integration.mjs";
+import { createGitHubClient } from "./github-client.mjs";
+import { writeGitHubBuild } from "./github-build.mjs";
 import { buildModelCandidates, selectTaskModel } from "./model-selector.mjs";
 
 function getLinearInvocation(args: string[]) {
@@ -853,6 +855,14 @@ function registerSupervisorTools(pi: ExtensionAPI) {
   }
 }
 
+function parseGitHubIssueInvocation(args: string) {
+  const tokens = String(args ?? "").trim().split(/\s+/).filter(Boolean);
+  if (tokens.length !== 1) return null;
+  const value = tokens[0];
+  if (/^#?\d+$/.test(value) || /^https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+\/?$/i.test(value)) return value;
+  return null;
+}
+
 export default function crosbyExtension(pi: ExtensionAPI) {
   pi.registerEntryRenderer("crosby-build-progress", (entry: any, _options: any, theme: any) => (
     new Text(theme.fg("accent", formatBuildProgress(entry.data)), 0, 0)
@@ -864,14 +874,24 @@ export default function crosbyExtension(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       let command: ReturnType<typeof parseBuildCommandArgs> | undefined;
       let statusArgs: any;
+      let githubClient: any;
+      let githubQueue: any;
       try {
-        command = parseBuildCommandArgs(args);
+        const githubIssue = parseGitHubIssueInvocation(args);
+        const sourcePath = process.cwd();
+        const identity = await resolveRepositoryIdentity(pi, sourcePath);
+        if (githubIssue) {
+          githubClient = createGitHubClient({ repository: identity, exec: (name: string, ghArgs: string[]) => pi.exec(name, ghArgs, { cwd: sourcePath }) });
+          githubQueue = await githubClient.loadParentQueue(githubIssue);
+          const buildFolder = await writeGitHubBuild(githubQueue, path.join(homedir(), ".pi", "crosby", "github-builds"));
+          command = parseBuildCommandArgs(`run ${buildFolder}`);
+        } else {
+          command = parseBuildCommandArgs(args);
+        }
         const herdrContext = requireCrosbyHerdrContext();
         const invokeHerdrCli = createHerdrCliInvoker({ exec: (commandName: string, commandArgs: string[]) => pi.exec(commandName, commandArgs) });
         const herdr = createHerdrClient({ invoke: invokeHerdrCli });
         const registryRoot = path.join(homedir(), ".pi", "crosby");
-        const sourcePath = process.cwd();
-        const identity = await resolveRepositoryIdentity(pi, sourcePath);
         statusArgs = { buildFolder: command.buildFolder, sourcePath, workspace: herdrContext.workspace, registryRoot, repositoryIdentity: identity };
         if (command.mode === "status") {
           const status = await readBuildStatus(statusArgs);
@@ -936,6 +956,13 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             },
             waitForReport,
             integrateTask: (input: any) => integrateTask(input),
+            onTaskIntegrated: githubClient
+              ? async ({ task, report }: any) => {
+                  const issueNumber = task.id.replace(/^task-0*/, "");
+                  await githubClient.moveIssue(issueNumber, "Done");
+                  await githubClient.addComment(issueNumber, `Crosby completed this task. Commit: ${report.changes?.commit ?? "recorded in the durable worktree"}.`);
+                }
+              : undefined,
             onProgress: async (progress: any) => {
               pi.appendEntry("crosby-build-progress", progress);
               ctx.ui.notify(formatBuildProgress(progress), "info");
@@ -943,6 +970,13 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             emitLifecycle: (event: any) => pi.appendEntry("crosby-worker-lifecycle", event),
           },
         });
+        if (githubClient && githubQueue) {
+          const refreshed = await githubClient.loadParentQueue(githubQueue.parent.identifier);
+          if (refreshed.children.every((child: any) => child.state.name === "Done")) {
+            await githubClient.addComment(refreshed.parent.identifier, `Crosby completed all child tasks for ${refreshed.parent.title}.`);
+            await githubClient.moveIssue(refreshed.parent.identifier, "Review");
+          }
+        }
         pi.appendEntry("crosby-build-complete", {
           buildId: result.build.buildId,
           parentBranch: result.build.parentBranch,

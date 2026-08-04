@@ -68,6 +68,8 @@ function taskAssessmentPrompt(task, candidates) {
       fileScope: task?.fileScope ?? task?.fileScopes,
       verification: task?.verification,
       guardrails: task?.guardrails,
+      modelHint: task?.modelHint,
+      effortHint: task?.effortHint,
     }, null, 2),
     "",
     "Allowed models:",
