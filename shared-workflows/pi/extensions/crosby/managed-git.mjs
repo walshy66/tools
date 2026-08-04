@@ -76,7 +76,15 @@ export async function createManagedRepository({ root, sourcePath, sourceRemote, 
   await git(["-C", barePath, "remote", "set-url", "origin", source]);
   await git(["-C", barePath, "fetch", "origin", "--prune"]);
   if (sourcePath) await copyCommitIdentity(sourcePath, barePath);
-  return { root: managedRoot, sourcePath: source, repositoryIdentity: identity, barePath, worktreeRoot: path.join(managedRoot, "worktrees") };
+  const sourceHead = sourcePath ? await gitOutput(["-C", sourcePath, "rev-parse", "HEAD"]) : null;
+  return {
+    root: managedRoot,
+    sourcePath: source,
+    sourceHead,
+    repositoryIdentity: identity,
+    barePath,
+    worktreeRoot: path.join(managedRoot, "worktrees", safeName(identity)),
+  };
 }
 
 async function resolveRef(managedRepository, preferredRef) {
@@ -199,6 +207,10 @@ export async function serializedMerge({ parentWorktreePath, taskBranch, message 
   const branch = text(taskBranch, "taskBranch");
   const lockPath = await acquireMergeLock(parent);
   try {
+    const ancestry = await git(["-C", parent, "merge-base", "--is-ancestor", branch, "HEAD"], undefined, { allowFailure: true });
+    if (ancestry.code === 0) {
+      return { merged: false, alreadyMerged: true, sha: await gitOutput(["-C", parent, "rev-parse", "HEAD"]) };
+    }
     const result = await git(["-C", parent, "merge", "--no-ff", "--no-commit", branch], undefined, { allowFailure: true });
     if (result.code !== 0) {
       await git(["-C", parent, "merge", "--abort"], undefined, { allowFailure: true });

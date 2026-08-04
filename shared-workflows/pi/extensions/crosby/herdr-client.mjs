@@ -35,7 +35,23 @@ function responseWithState(value, operation) {
   return { ...response, state: agentState(response.state, operation) };
 }
 
-export function createHerdrClient({ invoke } = {}) {
+function validateWindowsPiArgs(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (/^--[a-z0-9-]+$/i.test(argument) && !["--model", "--thinking"].includes(argument)) continue;
+    if (argument === "--model" && /^[A-Za-z0-9._~:/-]+$/.test(args[index + 1] ?? "")) {
+      index += 1;
+      continue;
+    }
+    if (argument === "--thinking" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(args[index + 1])) {
+      index += 1;
+      continue;
+    }
+    fail("Windows shell Pi startup received unsafe or unsupported arguments.");
+  }
+}
+
+export function createHerdrClient({ invoke, platform = process.platform } = {}) {
   if (typeof invoke !== "function") fail("Herdr client requires an invoke(operation, input) function.");
 
   async function call(operation, input) {
@@ -85,14 +101,39 @@ export function createHerdrClient({ invoke } = {}) {
     },
 
     async startPiAgent({ pane, name, agentArgs } = {}) {
-      const input = { pane: text(pane, "pane"), kind: "pi" };
-      if (name !== undefined) input.name = text(name, "name");
-      if (agentArgs !== undefined) {
-        if (!Array.isArray(agentArgs) || agentArgs.some((argument) => typeof argument !== "string")) {
-          fail("agentArgs must be an array of strings.");
-        }
-        input.agentArgs = [...agentArgs];
+      const paneId = text(pane, "pane");
+      const agentName = name === undefined ? undefined : text(name, "name");
+      const args = agentArgs === undefined ? [] : agentArgs;
+      if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string")) {
+        fail("agentArgs must be an array of strings.");
       }
+
+      if (platform === "win32") {
+        validateWindowsPiArgs(args);
+        await call("runPaneCommand", { pane: paneId, command: ["pi", ...args].join(" ") });
+        const deadline = Date.now() + 30_000;
+        let detected;
+        while (!detected) {
+          try {
+            detected = responseWithState(await call("inspectAgent", { agent: paneId }), "inspectAgent");
+          } catch (error) {
+            if (Date.now() >= deadline) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+        const response = agentName
+          ? responseWithState(await call("renameAgent", { agent: paneId, name: agentName }), "renameAgent")
+          : detected;
+        return {
+          ...response,
+          name: text(response.name, "Herdr detected agent name"),
+          pane: paneId,
+        };
+      }
+
+      const input = { pane: paneId, kind: "pi" };
+      if (agentName !== undefined) input.name = agentName;
+      if (agentArgs !== undefined) input.agentArgs = [...args];
       const response = responseWithState(await call("startAgent", input), "startAgent");
       return {
         ...response,
@@ -143,6 +184,17 @@ export function createHerdrClient({ invoke } = {}) {
         name: text(name, "name"),
       }), "renameAgent");
       return { ...response, name: text(response.name, "Herdr renameAgent response name") };
+    },
+
+    async sendAgentKeys({ agent, keys } = {}) {
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== "string" || !key.trim())) {
+        fail("keys must be a non-empty array of strings.");
+      }
+      return responseWithState(await call("sendAgentKeys", { agent: text(agent, "agent"), keys: [...keys] }), "sendAgentKeys");
+    },
+
+    async stopAgent({ agent } = {}) {
+      return responseWithState(await call("stopAgent", { agent: text(agent, "agent") }), "stopAgent");
     },
 
     async inspectAgent({ agent } = {}) {

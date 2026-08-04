@@ -41,8 +41,10 @@ test("exposes validated agent control operations", async () => {
     readAgent: { text: "worker output" },
     renameAgent: { name: "coa-364-worker", state: "idle" },
     inspectAgent: { name: "coa-364-worker", state: "blocked" },
+    sendAgentKeys: { state: "working" },
+    stopAgent: { state: "done" },
   });
-  const client = createHerdrClient({ invoke: fake.invoke });
+  const client = createHerdrClient({ invoke: fake.invoke, platform: "linux" });
 
   assert.deepEqual(await client.snapshot(), { workspaces: [] });
   assert.deepEqual(await client.closeTaskTab({ tab: "tab-1" }), { tab: "tab-1" });
@@ -54,6 +56,42 @@ test("exposes validated agent control operations", async () => {
   assert.deepEqual(await client.readAgent({ agent: "coa-364" }), { text: "worker output" });
   assert.deepEqual(await client.renameAgent({ agent: "coa-364", name: "coa-364-worker" }), { name: "coa-364-worker", state: "idle" });
   assert.deepEqual(await client.inspectAgent({ agent: "coa-364-worker" }), { name: "coa-364-worker", state: "blocked" });
+  assert.deepEqual(await client.sendAgentKeys({ agent: "coa-364-worker", keys: ["ctrl-c"] }), { state: "working" });
+  assert.deepEqual(await client.stopAgent({ agent: "coa-364-worker" }), { state: "done" });
+});
+
+test("starts Pi through the interactive Windows shell and names it after detection", async () => {
+  const fake = fakeHerdr({
+    runPaneCommand: { pane: "pane-1" },
+    inspectAgent: { name: "pi", pane: "pane-1", state: "idle" },
+    renameAgent: { name: "task-001", pane: "pane-1", state: "idle" },
+  });
+  const client = createHerdrClient({ invoke: fake.invoke, platform: "win32" });
+
+  assert.deepEqual(
+    await client.startPiAgent({
+      pane: "pane-1",
+      name: "task-001",
+      agentArgs: ["--approve", "--model", "openai-codex/gpt-5.6-luna", "--thinking", "medium"],
+    }),
+    { name: "task-001", pane: "pane-1", state: "idle" },
+  );
+  assert.deepEqual(fake.calls, [
+    { operation: "runPaneCommand", input: { pane: "pane-1", command: "pi --approve --model openai-codex/gpt-5.6-luna --thinking medium" } },
+    { operation: "inspectAgent", input: { agent: "pane-1" } },
+    { operation: "renameAgent", input: { agent: "pane-1", name: "task-001" } },
+  ]);
+});
+
+test("rejects unsafe Windows Pi startup values before invoking the shell", async () => {
+  const fake = fakeHerdr({});
+  const client = createHerdrClient({ invoke: fake.invoke, platform: "win32" });
+
+  await assert.rejects(
+    client.startPiAgent({ pane: "pane-1", agentArgs: ["--model", "safe/model;Remove-Item"] }),
+    /unsafe or unsupported arguments.*Recovery/i,
+  );
+  assert.deepEqual(fake.calls, []);
 });
 
 test("fails closed with recovery guidance for adapter failures and malformed Herdr responses", async () => {

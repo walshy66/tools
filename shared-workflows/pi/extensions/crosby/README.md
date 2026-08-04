@@ -1,101 +1,80 @@
 # Crosby
 
-Crosby executes Linear child tasks in isolated, visible Herdr/Pi workers. It uses one managed parent worktree per Linear parent and one managed task worktree per child, then serially integrates verified task branches.
+Crosby runs one sequential, Herdr-visible worker at a time from a local build folder. Each task gets an isolated Git worktree; accepted commits integrate into one parent branch. Crosby never creates a PR automatically.
 
-## Configure
+## Build layout
 
-1. Install the extension and make `linear`, `git`, and `herdr` available to Pi. Run `/crosby` only from a Pi session inside Herdr; Crosby uses that caller's workspace and never the mutable UI-focused workspace.
-2. Add a folder label to the parent issue that resolves to the local repository (for example `tools-coa-360`). Crosby searches `C:\Users\camer\Documents\<label>` and `C:\Users\camer\Documents\projects\<label>`.
-3. Give the parent a Linear `branchName` and create AFK child tasks in `Ready to Build`.
-4. Add exactly one work-type label to every execution task (`wt:process-automation` for Crosby work).
-5. Optionally configure Claude PR review:
-   - `CROSBY_CLAUDE_MODEL` (default `claude-sonnet-4-6`)
-   - `CROSBY_CLAUDE_EFFORT` (default `medium`)
-
-Pi workers inherit normal Pi model/session selection. The optional variables apply only to the explicit Claude PR-review worker.
-
-## Task metadata
-
-A child task must declare its execution contract in its Linear description:
-
-```md
-## Crosby execution
-
-- Parallel: sequential
-- File scope:
-  - `shared-workflows/pi/extensions/crosby/index.ts`
-- Verification:
-  - `node --test shared-workflows/pi/extensions/crosby/scheduler.test.mjs`
-```
-
-Use `Parallel: allowed` only when file scopes are disjoint. The scheduler rejects invalid contracts, unresolved blockers, overlapping scopes, and missing verification before a task is selected. Integration validates changed paths and runs the declared verification before committing and merging.
-
-## Execute a queue
+Create a numbered build folder containing `tasks.md`:
 
 ```text
-/crosby COA-360
-/crosby --watch
-/crosby push COA-360
-/crosby review COA-360
+specs/001-example/tasks.md
 ```
 
-- `/crosby COA-360` selects the next unblocked `Ready to Build` child under that parent.
-- `/crosby --watch` polls parents in `Execute` every 60 seconds.
-- `/crosby push COA-360` explicitly pushes the parent branch and creates or updates its PR.
-- `/crosby review COA-360` explicitly runs the Claude PR review.
+The task list declares the build ID, parent branch, stable task IDs, order, outcome, acceptance criteria, file scope, verification, and guardrails. An optional `### Instructions` section may add worker-specific direction; when omitted, Crosby uses the task outcome as its concise instruction. `Execution mode` defaults to `AFK`; a `HITL` task is a hard human gate and Crosby stops before model selection or worker launch. Directory scope may use a trailing `/` or the explicit recursive form `/**`; other globs remain invalid. Generate the build with the shared `to-issues` workflow. Markdown is input; durable execution state lives in the Crosby registry.
 
-Crosby reconciles persisted reports, then dispatches up to two eligible workers globally. Tasks in the same repository run together only when both declare `Parallel: allowed` with disjoint scopes. Each selected child moves to `Build`, receives a visible Herdr tab and Pi worker, and records its task worktree, branch, tab, pane, agent, and contract in the local registry. The worker finishes through the `crosby_worker_report` tool, which validates and persists its completion or block report; a blocked report also marks the Herdr agent blocked. Reported branches are integrated serially. A successful integration moves the child to `Done`; a recoverable integration or worker problem moves it to `In Review` with retained evidence. When every child is `Done`, it runs final integration commands, posts the consolidated parent report, and moves the parent to `In Review`.
+## Run
 
-## Observe and control workers
+Run Crosby from a Pi session inside Herdr:
 
-Crosby registers task-keyed tools for both explicit calls and conversational operator requests. Every operation requires both the owning parent key and the task key, so it cannot accidentally target another queue:
+```text
+/crosby run specs/001-example
+/crosby resume specs/001-example
+/crosby status specs/001-example
+```
 
-- `crosby_task_status(parentKey, taskKey)` — compact lifecycle, attempts, agent state, and retained tab/worktree/branch.
-- `crosby_task_ask(parentKey, taskKey, message)` — send an operator message to the worker.
-- `crosby_task_pause(parentKey, taskKey)` — instruct the worker to pause and retain evidence.
-- `crosby_task_resume(parentKey, taskKey)` — resume a paused worker.
-- `crosby_task_stop(parentKey, taskKey)` — close the worker tab while retaining the task worktree and branch.
-- `crosby_task_cleanup(parentKey, taskKey)` — remove the retained worker tab and managed task worktree.
+`run` loads the build, creates or adopts the Herdr supervisor, creates the managed parent worktree, and launches the first task. `resume` reconciles durable state, integrates a completed report from its persisted task worktree without relaunching, and skips already integrated tasks. `status` prints every authored task with completed, running, awaiting-integration, pending, or human-gate state without launching a worker. Crosby also appends this full progress list as a durable parent-transcript entry after each integration and alongside any build error. `tasks.md` remains immutable execution input; it is never dirtied with runtime checkboxes.
 
-The same supervisor operation backs explicit tool use and conversational routing. Status deliberately reports compact state; full durable task records remain in the local Crosby registry at `~/.pi/crosby/registries/`.
+The parent tab remains interactive. The active task runs in its own visible Herdr tab and worktree, without stealing focus. Repository identity scopes managed worktree paths, and worker agent names are scoped to the build registry, so repeated build and task IDs from separate repositories cannot collide. Only one worker may own the queue gate at a time, and tasks advance strictly in authored order. Optional lifecycle-notification failures are retained as worker warnings and never reclassify a successfully launched worker as failed.
 
-Stop and cleanup first show their exact affected task/tab/worktree and require a UI confirmation. Cancelling leaves everything unchanged. Cleanup is the only action that removes a retained task worktree. It is intentionally destructive; inspect, commit, or copy any needed evidence before confirming it.
+## Worker model selection
 
-## Lifecycle and recovery
+Before launching each new task, the parent Pi model assesses the task contract and chooses from a focused pool of authenticated, reasoning-capable models on the parent model's provider. For versioned OpenAI Codex models, the pool stays within the parent's model family (for example, the available GPT-5.6 variants) to avoid routing to older or account-incompatible entries. Crosby validates and persists the selection, then starts Pi through the interactive shell with validated native arguments:
 
-1. **launching/running**: a visible Herdr worker owns the task worktree.
-2. **paused**: the worker was asked to stop changing files until `resume`.
-3. **stopped**: its tab is closed, but its worktree and branch remain for inspection or recovery.
-4. **review-required**: automatic recovery or integration could not safely proceed; inspect the retained evidence and resolve the Linear child manually.
-5. **cleaned**: an operator explicitly confirmed removal of the retained tab/worktree.
+```text
+pi --approve --model <selected-provider/model> --thinking medium
+```
 
-After a Crosby restart, it reconciles an existing recorded Herdr agent instead of starting a duplicate. If that agent is unavailable, it makes at most one automatic same-worktree recovery. A second recovery failure is retained for review rather than retried indefinitely.
+Crosby dispatches the task prompt only after Herdr detects the configured worker. This prevents model or thinking configuration text from becoming an accidental model turn or delaying the real task contract. The shell-native launch avoids the PowerShell `Start-Process` shim failure while its allowlist rejects unsafe argument values. A resumed worker reuses its persisted selection rather than reassessing. Missing parent-model context, authentication failure, an empty candidate pool, or an out-of-pool answer fails closed before worker launch. The operator sees the selected model and thinking level in the parent tab.
 
-For a blocked, failed, or invalid worker report:
+## Worker reports
 
-1. Run `crosby_task_status` for the parent and task keys.
-2. Inspect the visible Herdr transcript, retained tab, worktree, branch, and the child’s detailed Linear comment.
-3. Use `ask`, `pause`, or `resume` when the worker can continue safely.
-4. Otherwise resolve the issue manually, then move it to the appropriate Linear state. Use `cleanup` only after preserving any required evidence.
+A worker must finish with exactly one structured report using `crosby_worker_report`:
 
-## Retention and cleanup
+- `complete` — includes changed paths, commit, verification, and risks.
+- `blocked` — includes required human action and recovery notes.
+- `failed` — includes summary and recovery notes.
+- `cancelled` — includes summary and recovery notes.
 
-Completed, stopped, and review-required task tabs/worktrees are retained by default. Normal completion does **not** automatically close a task tab or delete a worktree. This makes integration evidence and recovery inspectable. Explicit cleanup closes a remaining tab (if any) and uses Git worktree removal for the task path; it does not silently clean sibling tasks.
+Herdr `idle`, `done`, process exit, or terminal text never counts as completion. Any invalid or missing report stops the queue. When a resumed worker replaces a blocked report with a terminal non-blocked report, Crosby clears the visible Herdr blocked marker.
 
-## Migration from earlier Crosby behavior
+## Observe and control
 
-Earlier Crosby runs executed workers directly from the parent checkout and offered no task-keyed supervisor controls. Migrate by:
+Worker guidance and lifecycle control target the worker tab directly:
 
-1. Adding task contracts and the work-type label to current child issues.
-2. Starting or resuming work through `/crosby <PARENT-KEY>` so Crosby creates managed worktrees and a registry record.
-3. Using the supervisor tools for status and recovery instead of closing terminals or deleting worktrees manually.
-4. Keeping existing parent `Build`/`Building` states as valid resume states; do not reset them merely to restart Crosby.
-5. Cleaning up old manual worktrees only after confirming their contents are integrated or no longer needed.
+- Ask the worker for an update or provide guidance.
+- Pause and resume without releasing the queue gate.
+- Stop only with explicit confirmation; the worker tab may close but its worktree and branch remain.
+- Clean up retained evidence only with explicit confirmation after inspection.
+
+The durable registry is under `~/.pi/crosby/registries/` by default. It records build identity, Herdr space, supervisor and worker IDs, queue state, reports, worktrees, and recovery evidence. A resumed build rebinds stale supervisor metadata to the parent pane currently consuming reports.
+
+## Integration and recovery
+
+Before integration Crosby:
+
+1. Collects changed paths and validates them against the task scope.
+2. Runs every declared verification command.
+3. Commits task evidence if needed.
+4. Merges serially into the parent branch.
+
+Scope violations, failed verification, merge conflicts, blocked reports, failed reports, and cancelled reports stop the queue. Worker prompts repeat the complete allowed scope and require a blocked report rather than an out-of-scope edit. New managed parents are based on the operator checkout's exact committed `HEAD`, not a stale cached bare-repository `HEAD`. If an unstarted retained parent predates that source commit, Crosby fails closed and requires explicit cleanup rather than silently resetting evidence. Task worktrees and branches remain available for inspection. A worker-launch failure also retains its newly created Herdr tab so the operator can inspect the terminal evidence before explicit cleanup. Crosby does not auto-resolve conflicts, delete evidence, push, or create a PR.
+
+After a restart, Crosby adopts recorded Herdr workers when they are inspectable and never launches a duplicate for an uncertain active task. Herdr unavailability fails closed.
 
 ## Safety rules
 
-- Parents in `Execute` are watched; children must be `Ready to Build` to be selected.
-- Blocked children are skipped until every blocker is `Done`.
-- One parent has one feature branch; task branches are integrated serially.
-- Crosby fails closed if it cannot resolve a repository folder, branch, task contract, worker report, or required verification.
-- Push and PR review remain explicit operations and require a clean working tree.
+- Run only from a Herdr-managed Pi pane.
+- Keep the normal checkout separate from managed parent/task worktrees.
+- Do not edit `tasks.md` as runtime state.
+- Review the final parent branch and run the shared `code-reviewer` workflow before creating the single PR.
+- Use explicit Git/PR commands only after operator review and confirmation.

@@ -61,6 +61,7 @@ test("rejects unsafe scope declarations", () => {
 test("normalizes exact-file and directory scopes", () => {
   assert.deepEqual(normalizeScope("./src//worker.mjs"), { path: "src/worker.mjs", type: "file" });
   assert.deepEqual(normalizeScope("src/workers/"), { path: "src/workers", type: "directory" });
+  assert.deepEqual(normalizeScope("src/workers/**"), { path: "src/workers", type: "directory" });
 });
 
 test("scope overlap handles disjoint and file/directory combinations deterministically", () => {

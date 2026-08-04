@@ -57,6 +57,43 @@ test("persists blocked reports and requests Herdr blocked state", async () => {
   assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, "blocked");
 });
 
+test("clears Herdr blocked state when a replacement completion report is submitted", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-worker-report-"));
+  const env = environment(root);
+  const store = createRegistryStore({ root, repositoryIdentity: env.CROSBY_REPOSITORY_ID, parentKey: env.CROSBY_PARENT_KEY });
+  await updateWorkerRecord(store, env.CROSBY_TASK_KEY, { lifecycle: "running" });
+  const events = [];
+  const emitHerdrBlocked = (payload) => events.push(payload);
+  const blocked = {
+    outcome: "blocked",
+    summary: "Need Docker Desktop.",
+    requiredHumanAction: "Start Docker Desktop.",
+    recoveryNotes: ["Rerun verification."],
+    requestHerdrBlocked: true,
+  };
+
+  await persistWorkerReport({ report: blocked, env, emitHerdrBlocked });
+  await persistWorkerReport({ report: completion, env, emitHerdrBlocked });
+
+  assert.deepEqual(events, [
+    { active: true, label: "COA-365: Need Docker Desktop." },
+    { active: false },
+  ]);
+  assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, "reported");
+});
+
+test("persists failed and cancelled terminal outcomes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "crosby-worker-report-"));
+  const env = environment(root);
+  const store = createRegistryStore({ root, repositoryIdentity: env.CROSBY_REPOSITORY_ID, parentKey: env.CROSBY_PARENT_KEY });
+  await updateWorkerRecord(store, env.CROSBY_TASK_KEY, { lifecycle: "running" });
+
+  for (const outcome of ["failed", "cancelled"]) {
+    await persistWorkerReport({ report: { outcome, summary: `Worker ${outcome}.`, recoveryNotes: ["Inspect evidence."] }, env });
+    assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, outcome);
+  }
+});
+
 test("refuses a report from an unregistered worker", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "crosby-worker-report-"));
   await assert.rejects(() => persistWorkerReport({ report: completion, env: environment(root) }), /no registered Crosby worker/i);
