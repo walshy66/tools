@@ -1,17 +1,30 @@
-# Issue Slice Template
+# GitHub Crosby Child Issue
 
-## Title
+Parent: #<parent-number>
 
-## What to Build
+## Outcome
 
-## User Value
+Describe the user or implementation outcome.
 
 ## Acceptance Criteria
 
 - [ ] Criterion 1
 - [ ] Criterion 2
-- [ ] Criterion 3
 
-## Blocked By
+## File Scope
 
-- None
+- `path/to/allowed/file-or-directory`
+
+## Verification
+
+- `command to run`
+
+## Guardrails
+
+- Do not modify out-of-scope files.
+- Report a blocked outcome when the contract cannot be satisfied safely.
+
+## Optional Worker Hints
+
+- `model:<provider/model>` labels are advisory only.
+- `effort:<level>` labels are advisory only.

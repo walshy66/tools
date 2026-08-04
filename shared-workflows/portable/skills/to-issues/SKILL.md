@@ -90,7 +90,7 @@ Use `gh issue create` for each child. Each created child should include:
 - `Parent: #<parent-number>` in the body.
 - Scope and acceptance criteria.
 - Any blocker/dependency notes.
-- For AFK/buildable issues: `Expected Files`, `Do Not Touch`, `Test Command`, and `Crosby Locks` sections.
+- For AFK/buildable issues: `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails` sections. `Expected Files`, `Do Not Touch`, `Test Command`, and `Crosby Locks` may be included as explanatory detail, but the four execution sections are authoritative.
 - The same milestone as the parent, when present.
 - Inherited parent labels where appropriate, especially work-type and local-folder routing labels.
 - Type/status/mode labels:
@@ -120,6 +120,8 @@ gh issue create \
 After creating the children:
 
 - Add or update a parent comment containing the child issue list in dependency order.
+- Use `scripts/bootstrap-github-labels.sh` before creating issues when required labels are absent; label creation/update must be idempotent.
+- Do not add repository-folder routing labels. Crosby validates the issue repository against the current checkout remote.
 - If safely possible, update the parent issue body to include a `## Child Issues` checklist:
 
   ```markdown
