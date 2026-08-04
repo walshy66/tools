@@ -1035,50 +1035,47 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         };
-        const result = await runBuild({
-          buildFolder: command.buildFolder,
-          sourcePath,
-          workspace: herdrContext.workspace,
-          pane: herdrContext.pane,
-          agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor",
-          registryRoot,
-          repositoryIdentity: identity,
-          adapters: {
-            herdrClient: herdr,
-            selectTaskModel: async ({ task }: any) => {
-              const selection = await selectTaskModel({ task, candidates: modelCandidates, assess: assessTaskModel });
-              pi.appendEntry("crosby-worker-model-selected", { taskId: task.id, ...selection });
-              ctx.ui.notify(`Crosby ${task.id}: ${selection.model} with ${selection.thinking} thinking.`, "info");
-              return selection;
-            },
-            waitForReport,
-            integrateTask: (input: any) => integrateTask(input),
-            onTaskIntegrated: async ({ task, report }: any) => {
-              dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
-              dashboardController?.executionFinalized({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
-              if (githubClient) {
-                const issueNumber = task.id.replace(/^task-0*/, "");
-                await githubClient.moveIssue(issueNumber, "Done");
-                await githubClient.addComment(issueNumber, buildGitHubChildProgress({
-                  child: { identifier: `#${issueNumber}` },
-                  outcome: report.outcome,
-                  summary: report.summary,
-                  changes: report.changes?.paths ?? [report.changes?.commit ?? "recorded in the durable worktree"],
-                  verification: report.verification?.map((entry: any) => `${entry.command}: ${entry.result}`),
-                  recoveryNotes: report.risks,
-                }));
-              }
-            },
-            onProgress: async (progress: any) => {
-              pi.appendEntry("crosby-build-progress", progress);
-              ctx.ui.notify(formatBuildProgress(progress), "info");
-            },
-            emitLifecycle: (event: any) => {
-              if (event.lifecycle === "working") dashboardController?.workerStarted(event);
-              pi.appendEntry("crosby-worker-lifecycle", event);
-            },
+        const buildAdapters = {
+          herdrClient: herdr,
+          selectTaskModel: async ({ task }: any) => {
+            const selection = await selectTaskModel({ task, candidates: modelCandidates, assess: assessTaskModel });
+            pi.appendEntry("crosby-worker-model-selected", { taskId: task.id, ...selection });
+            ctx.ui.notify(`Crosby ${task.id}: ${selection.model} with ${selection.thinking} thinking.`, "info");
+            return selection;
           },
-        });
+          waitForReport,
+          integrateTask: (input: any) => integrateTask(input),
+          onTaskIntegrated: async ({ task, report }: any) => {
+            dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+            dashboardController?.executionFinalized({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+            if (githubClient) {
+              const issueNumber = task.id.replace(/^task-0*/, "");
+              await githubClient.moveIssue(issueNumber, "Done");
+              await githubClient.addComment(issueNumber, buildGitHubChildProgress({ child: { identifier: `#${issueNumber}` }, outcome: report.outcome, summary: report.summary, changes: report.changes?.paths ?? [report.changes?.commit ?? "recorded in the durable worktree"], verification: report.verification?.map((entry: any) => `${entry.command}: ${entry.result}`), recoveryNotes: report.risks }));
+            }
+          },
+          onProgress: async (progress: any) => {
+            pi.appendEntry("crosby-build-progress", progress);
+            ctx.ui.notify(formatBuildProgress(progress), "info");
+          },
+          emitLifecycle: (event: any) => {
+            if (event.lifecycle === "working") dashboardController?.workerStarted(event);
+            pi.appendEntry("crosby-worker-lifecycle", event);
+          },
+        };
+        const runDurableBuild = (buildFolder: string) => runBuild({ buildFolder, sourcePath, workspace: herdrContext.workspace, pane: herdrContext.pane, agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor", registryRoot, repositoryIdentity: identity, adapters: buildAdapters });
+        let result = await runDurableBuild(command.buildFolder);
+        if (watchMode) {
+          while (true) {
+            await new Promise((resolve) => setTimeout(resolve, 60000));
+            const queues = await githubClient.loadExecuteParentQueues();
+            const nextQueue = queues.find((queue: any) => !queue.children.some((child: any) => child.state.name === "Building"));
+            if (!nextQueue) continue;
+            githubQueue = nextQueue;
+            const nextFolder = await writeGitHubBuild(nextQueue, path.join(homedir(), ".pi", "crosby", "github-builds"));
+            result = await runDurableBuild(nextFolder);
+          }
+        }
         if (githubClient && githubQueue) {
           const refreshed = await githubClient.loadParentQueue(githubQueue.parent.identifier);
           if (refreshed.children.every((child: any) => child.state.name === "Done")) {
