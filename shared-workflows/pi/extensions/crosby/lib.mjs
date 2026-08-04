@@ -175,7 +175,7 @@ function buildConcurrentSupervisorError(queue, buildingChildren = getBuildingChi
   const buildingSuffix = buildingIssueKeys.length > 0 ? ` Active Building child issues: ${buildingIssueKeys.join(", ")}.` : "";
 
   return new Error(
-    `Another active supervisor run is already in progress for ${queue?.parent?.identifier ?? "the supplied parent"}.${buildingSuffix} Recovery: wait for the active run to finish or clear the stuck Building child in Linear, then rerun /crosby ${queue?.parent?.identifier ?? "PARENT-ISSUE-KEY"}.`,
+    `Another active supervisor run is already in progress for ${queue?.parent?.identifier ?? "the supplied parent"}.${buildingSuffix} Recovery: wait for the active run to finish or clear the stuck Building child in GitHub, then rerun /crosby ${queue?.parent?.identifier ?? "PARENT-ISSUE-KEY"}.`,
   );
 }
 
@@ -273,9 +273,9 @@ export function buildRalphLoopPrompt(child) {
       `Continue Crosby execution for container issue ${issueKey}.`,
       "",
       "Execution notes:",
-      `- Linear CLI is available and authenticated in this environment for ${issueKey}.`,
-      `- Do not claim you cannot access Linear unless running 'linear issue view ${issueKey} --json' actually fails in this worker.`,
-      `- First refresh the issue with 'linear issue view ${issueKey} --json'.`,
+      `- GitHub CLI is available and authenticated in this environment for ${issueKey}.`,
+      `- Do not claim you cannot access GitHub unless running 'gh issue view ${issueKey} --json' actually fails in this worker.`,
+      `- First refresh the issue with 'gh issue view ${issueKey} --json'.`,
       "- Crosby may already have moved this container issue to Build/Building before launching this worker; that state is valid and means this is an explicit resume/continuation, not a fresh ralph-loop start.",
       "- This issue has child issues, so treat it as a container/parent queue instead of invoking the ralph-loop hard guard on the container itself.",
       "- Execute the next unblocked child issue under this container that is in Ready to Build, using the same TDD discipline as ralph-loop for that leaf issue.",
@@ -296,9 +296,9 @@ export function buildRalphLoopPrompt(child) {
     `Continue Crosby execution for issue ${issueKey}.`,
     "",
     "Execution notes:",
-    `- Linear CLI is available and authenticated in this environment for ${issueKey}.`,
-    `- Do not claim you cannot access Linear unless running 'linear issue view ${issueKey} --json' actually fails in this worker.`,
-    `- First refresh the issue with 'linear issue view ${issueKey} --json'.`,
+    `- GitHub CLI is available and authenticated in this environment for ${issueKey}.`,
+    `- Do not claim you cannot access GitHub unless running 'gh issue view ${issueKey} --json' actually fails in this worker.`,
+    `- First refresh the issue with 'gh issue view ${issueKey} --json'.`,
     "- The parent queue snapshot may be shallow and omit this issue's children, so do not assume this is a leaf issue from the preloaded snapshot alone.",
     "- If the refreshed issue has child issues, treat it as a container/parent queue: Build/Building is a valid resume state, find its next unblocked Ready to Build child, and continue through its child queue until exhausted or human action is required.",
     "- Only if the refreshed issue has no children, execute it as a leaf issue using ralph-loop/TDD discipline.",
@@ -635,7 +635,7 @@ export async function runSingleChildExecution(queue, operations) {
       }
 
       throw new Error(
-        `Failed to move issue ${issue.identifier} to Building. Recovery: inspect the issue state in Linear, then rerun /crosby ${queue.parent.identifier}. ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to move issue ${issue.identifier} to Building. Recovery: inspect the issue state in GitHub, then rerun /crosby ${queue.parent.identifier}. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -656,7 +656,7 @@ export async function runSingleChildExecution(queue, operations) {
       await operations.moveIssue(queue.parent.identifier, "Building");
     } catch (error) {
       throw new Error(
-        `Failed to move parent issue ${queue.parent.identifier} to Building after claiming ${child.identifier}. Recovery: fix the parent workflow state in Linear before worker launch, then rerun /crosby ${queue.parent.identifier}. ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to move parent issue ${queue.parent.identifier} to Building after claiming ${child.identifier}. Recovery: fix the parent workflow state in GitHub before worker launch, then rerun /crosby ${queue.parent.identifier}. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

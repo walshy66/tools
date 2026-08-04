@@ -44,4 +44,4 @@ Copy or symlink the extension folder into the project’s `.pi/extensions/` dire
 ## Example
 
 - `fly/` — Fly.io / flyctl wrapper commands and tools
-- `crosby/` — Linear execution orchestrator
+- `crosby/` — GitHub Issues execution orchestrator

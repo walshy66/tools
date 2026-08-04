@@ -19,15 +19,6 @@ import { createHerdrClient } from "./herdr-client.mjs";
 import { createHerdrCliInvoker } from "./herdr-cli.mjs";
 import { requireCrosbyHerdrContext } from "./herdr-context.mjs";
 import { persistWorkerReport } from "./worker-report.mjs";
-import {
-  createVisibleWorkerScheduler,
-  integrateWorkerReport,
-  runFinalIntegrationChecks,
-  workerReportToExecutionResult,
-  createCrosbySupervisor,
-} from "./scheduler.mjs";
-import { buildChildIntegrationComment, buildFinalIntegrationComment, buildParentIntegrationComment, buildSupervisorStatusReport } from "./linear-reporting.mjs";
-import { parseProjectConfig } from "./project-config.mjs";
 import { formatBuildProgress, parseBuildCommandArgs, readBuildStatus, runBuild } from "./build-runner.mjs";
 import { readRegistry } from "./registry.mjs";
 import { integrateTask } from "./integration.mjs";
@@ -50,23 +41,6 @@ import {
 } from "./dashboard.mjs";
 import { buildModelCandidates, selectTaskModel } from "./model-selector.mjs";
 
-function getLinearInvocation(args: string[]) {
-  const configured = process.env.LINEAR_BIN?.trim();
-  if (configured) {
-    return { command: configured, args };
-  }
-
-  const appData = process.env.APPDATA;
-  if (process.platform === "win32" && appData) {
-    const runnerScript = path.join(appData, "npm", "node_modules", "@kyaukyuai", "linear-cli", "run-linear.js");
-    if (existsSync(runnerScript)) {
-      return { command: process.execPath, args: [runnerScript, ...args] };
-    }
-  }
-
-  return { command: "linear", args };
-}
-
 function getGhInvocation(args: string[]) {
   const configured = process.env.GH_BIN?.trim();
   return { command: configured || "gh", args };
@@ -85,140 +59,6 @@ const DEFAULT_CROSBY_CLAUDE_EFFORT = process.env.CROSBY_CLAUDE_EFFORT?.trim() ||
 function getClaudeInvocation(args: string[]) {
   const configured = process.env.CLAUDE_BIN?.trim();
   return { command: configured || "claude", args };
-}
-
-async function loadIssueLabelsFromLinear(pi: ExtensionAPI, issueKey: string) {
-  const invocation = getLinearInvocation([
-    "api",
-    'query($id:String!){ issue(id:$id){ labels { nodes { name } } } }',
-    "--variable",
-    `id=${issueKey}`,
-  ]);
-  const result = await pi.exec(invocation.command, invocation.args);
-
-  if (result.code !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(
-      details
-        ? `Failed to load labels for ${issueKey} from Linear. ${details}`
-        : `Failed to load labels for ${issueKey} from Linear. Linear command: ${invocation.command}. Exit code: ${result.code}.`,
-    );
-  }
-
-  try {
-    return JSON.parse(result.stdout)?.data?.issue?.labels ?? { nodes: [] };
-  } catch (error) {
-    throw new Error(
-      `Failed to parse Linear label data for ${issueKey}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-async function loadIssueFromLinear(pi: ExtensionAPI, issueKey: string) {
-  const invocation = getLinearInvocation(["issue", "view", issueKey, "--json"]);
-  const result = await pi.exec(invocation.command, invocation.args);
-
-  if (result.code !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(
-      details
-        ? `Failed to load ${issueKey} from Linear. ${details}`
-        : `Failed to load ${issueKey} from Linear. Linear command: ${invocation.command}. Exit code: ${result.code}.`,
-    );
-  }
-
-  try {
-    const issue = JSON.parse(result.stdout);
-    const labelTargets = [issue, ...(Array.isArray(issue?.children) ? issue.children : [])].filter(
-      (target) => target?.identifier && !target?.labels,
-    );
-
-    await Promise.all(
-      labelTargets.map(async (target) => {
-        target.labels = await loadIssueLabelsFromLinear(pi, target.identifier);
-      }),
-    );
-
-    return issue;
-  } catch (error) {
-    throw new Error(
-      `Failed to parse Linear queue data for ${issueKey}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-async function loadIssuesByStateFromLinear(pi: ExtensionAPI, stateName: string) {
-  const invocation = getLinearInvocation([
-    "api",
-    `query($stateName:String!){ issues(filter: { state: { name: { eq: $stateName } } }) { nodes { identifier title priority state { name type } parent { identifier title } labels { nodes { name } } } } }`,
-    "--variable",
-    `stateName=${stateName}`,
-  ]);
-  const result = await pi.exec(invocation.command, invocation.args);
-
-  if (result.code !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(
-      details
-        ? `Failed to load ${stateName} issues from Linear. ${details}`
-        : `Failed to load ${stateName} issues from Linear. Linear command: ${invocation.command}. Exit code: ${result.code}.`,
-    );
-  }
-
-  try {
-    const payload = JSON.parse(result.stdout);
-    return payload?.data?.issues?.nodes ?? [];
-  } catch (error) {
-    throw new Error(
-      `Failed to parse ${stateName} issue data from Linear: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-async function loadExecuteParentQueuesFromLinear(pi: ExtensionAPI) {
-  const executeIssues = await loadIssuesByStateFromLinear(pi, "Execute");
-  const executeParents = executeIssues.filter((issue) => issue?.identifier && !issue?.parent);
-  return Promise.all(executeParents.map((issue) => fetchParentQueue(issue.identifier, (key) => loadIssueFromLinear(pi, key))));
-}
-
-function normalizeTargetState(state: string, issueKey?: string) {
-  switch (state) {
-    case "Building":
-      return issueKey && /^COA-\d+$/i.test(issueKey) ? "Build" : "Building";
-    case "Review":
-      return "In Review";
-    default:
-      return state;
-  }
-}
-
-async function moveIssue(pi: ExtensionAPI, issueKey: string, state: string) {
-  const targetState = normalizeTargetState(state, issueKey);
-  const invocation = getLinearInvocation(["issue", "move", issueKey, targetState]);
-  const result = await pi.exec(invocation.command, invocation.args);
-
-  if (result.code !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(
-      details
-        ? `Failed to move ${issueKey} to ${targetState}. ${details}`
-        : `Failed to move ${issueKey} to ${targetState}. Check Linear CLI authentication and try again.`,
-    );
-  }
-}
-
-async function addIssueComment(pi: ExtensionAPI, issueKey: string, body: string) {
-  const invocation = getLinearInvocation(["issue", "comment", "add", issueKey, body]);
-  const result = await pi.exec(invocation.command, invocation.args);
-
-  if (result.code !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(
-      details
-        ? `Failed to add comment to ${issueKey}. ${details}`
-        : `Failed to add comment to ${issueKey}. Check Linear CLI authentication and try again.`,
-    );
-  }
 }
 
 async function getPullRequestForBranch(
@@ -378,7 +218,7 @@ async function assertCleanWorkingTree(pi: ExtensionAPI, cwd: string, command: "p
 async function pushGitBranch(pi: ExtensionAPI, cwd: string, branchName?: string) {
   const resolvedBranchName = String(branchName ?? "").trim();
   if (!resolvedBranchName) {
-    throw new Error("Cannot push the parent branch because Linear did not provide a branch name. Recovery: set the parent branch name in Linear, then rerun /crosby push.");
+    throw new Error("Cannot push the parent branch because the issue did not provide a branch name. Recovery: set Branch metadata on the GitHub parent issue, then rerun /crosby push.");
   }
 
   await execGit(pi, ["push", "-u", "origin", resolvedBranchName], cwd);
@@ -396,7 +236,7 @@ async function ensureParentBranch(pi: ExtensionAPI, parentIssue: any, cwd?: stri
 
   if (!branchName) {
     throw new Error(
-      `Parent issue ${issueKey} is missing a Linear branch name. Recovery: set the parent branch in Linear, then rerun /crosby ${issueKey}.`,
+      `Parent issue ${issueKey} is missing a branch name. Recovery: set Branch metadata on the GitHub parent issue, then rerun /crosby ${issueKey}.`,
     );
   }
 
@@ -495,266 +335,6 @@ function appendWorkerTranscript(pi: ExtensionAPI, event: any) {
   });
 }
 
-async function finalizeParentIntegration(pi: ExtensionAPI, queue: any, completedChildren: any[]) {
-  const integration = [...completedChildren].reverse().map((entry) => entry?.workerResult?.integration).find(Boolean);
-  const parentWorktreePath = integration?.parentWorktreePath;
-  if (!parentWorktreePath) {
-    throw new Error(`Cannot run final integration checks for ${queue.parent.identifier}: managed parent worktree is unavailable. Recovery: rerun the final child integration from its retained Crosby worktree.`);
-  }
-  const config = parseProjectConfig(await readFile(path.join(parentWorktreePath, ".pi", "crosby.json"), "utf8"));
-  await runFinalIntegrationChecks({ parentWorktreePath, config });
-  await addIssueComment(pi, queue.parent.identifier, buildFinalIntegrationComment({ parent: queue.parent, children: queue.children }));
-  await moveIssue(pi, queue.parent.identifier, "Review");
-}
-
-async function reportIntegrationToLinear(pi: ExtensionAPI, event: any) {
-  const integration = event?.workerResult?.integration;
-  if (!integration) return;
-  const child = event.child;
-  const childBody = buildChildIntegrationComment({
-    child,
-    outcome: integration.outcome,
-    summary: event.workerResult?.summary,
-    changedPaths: integration.changedPaths,
-    verification: integration.verification,
-    merge: integration.merge,
-    retained: integration.retained,
-  });
-  await addIssueComment(pi, child.identifier, childBody);
-  await addIssueComment(
-    pi,
-    event.parent.identifier,
-    buildParentIntegrationComment({
-      child,
-      outcome: integration.outcome,
-      requiredHumanAction: event.workerResult?.requiredHumanAction,
-    }),
-  );
-}
-
-async function resolveRepositoryIdentity(pi: ExtensionAPI, cwd: string) {
-  const remote = await pi.exec("git", ["-C", cwd, "remote", "get-url", "origin"]);
-  return remote.code === 0 && remote.stdout.trim() ? remote.stdout.trim() : path.resolve(cwd);
-}
-
-async function createVisibleRuntime(pi: ExtensionAPI) {
-  const { workspace } = requireCrosbyHerdrContext();
-  const invokeHerdrCli = createHerdrCliInvoker({ exec: (command: string, args: string[]) => pi.exec(command, args) });
-  const herdr = createHerdrClient({ invoke: invokeHerdrCli });
-  return {
-    workspace,
-    scheduler: createVisibleWorkerScheduler({ registryRoot: path.join(homedir(), ".pi", "crosby"), herdr }),
-  };
-}
-
-async function queueContext(pi: ExtensionAPI, queue: any, source: "manual" | "watch") {
-  const cwd = resolveIssueWorkingDirectory(queue.parent).cwd;
-  return { ...queue, source, cwd, repositoryIdentity: await resolveRepositoryIdentity(pi, cwd) };
-}
-
-function integrationExecution(report: any, integration: any, child: any) {
-  if (integration.outcome === "done" || report.outcome === "blocked") return workerReportToExecutionResult(report, child);
-  return {
-    issueKey: child.identifier,
-    issueTitle: child.title,
-    outcome: "review",
-    summary: integration.summary,
-    changes: [],
-    tests: [],
-    requiredHumanAction: "Inspect the retained task worktree and resolve the integration failure.",
-    recoveryNotes: integration.retained?.recoveryNotes ?? [],
-  };
-}
-
-async function reconcileVisibleQueue(pi: ExtensionAPI, runtime: any, context: any) {
-  let workers = await runtime.scheduler.listWorkers({ repositoryIdentity: context.repositoryIdentity, parentKey: context.parent.identifier });
-  for (const worker of workers) {
-    if (!["launching", "running", "recovering"].includes(worker.lifecycle)) continue;
-    const child = context.children.find((entry: any) => entry?.identifier === worker?.registry?.taskKey);
-    if (!child) continue;
-    await runtime.scheduler.reconcileWorker({
-      parent: context.parent,
-      child,
-      prompt: buildRalphLoopPrompt(child),
-      sourcePath: context.cwd,
-      repositoryIdentity: context.repositoryIdentity,
-      workspace: runtime.workspace,
-    });
-  }
-  workers = await runtime.scheduler.listWorkers({ repositoryIdentity: context.repositoryIdentity, parentKey: context.parent.identifier });
-  const settled = [];
-
-  for (const worker of workers) {
-    if (!["reported", "blocked", "integrated"].includes(worker.lifecycle)) continue;
-    const taskKey = worker?.registry?.taskKey;
-    const child = context.children.find((entry: any) => entry?.identifier === taskKey);
-    if (!child) continue;
-    const report = await runtime.scheduler.getWorkerReport(worker);
-    if (!report) continue;
-
-    const integration = worker.lifecycle === "integrated" && worker.integration
-      ? worker.integration
-      : await integrateWorkerReport({
-          parent: { integrationWorktree: worker.parentWorktree?.path },
-          child,
-          worker,
-          report,
-        });
-    const workerResult = integrationExecution(report, integration, child);
-    if (worker.lifecycle !== "integrated") await runtime.scheduler.markWorkerIntegrated(worker, integration);
-    await moveIssue(pi, child.identifier, workerResult.outcome === "done" ? "Done" : "In Review");
-    const event = { parent: context.parent, child, workerResult };
-    appendWorkerTranscript(pi, event);
-    await reportIntegrationToLinear(pi, event);
-    await runtime.scheduler.markWorkerFinalized(worker);
-    settled.push({ child, workerResult });
-  }
-
-  const refreshed = await fetchParentQueue(context.parent.identifier, (key) => loadIssueFromLinear(pi, key));
-  if (
-    !/^in review$/i.test(String(refreshed.parent?.state?.name ?? "")) &&
-    refreshed.children.length > 0 &&
-    refreshed.children.every((child: any) => /^done$/i.test(String(child?.state?.name ?? "")))
-  ) {
-    const completed = workers
-      .filter((worker: any) => worker.integration)
-      .map((worker: any) => ({ workerResult: { integration: worker.integration } }));
-    await finalizeParentIntegration(pi, refreshed, completed);
-  }
-  return settled;
-}
-
-async function integrateWorker(pi: ExtensionAPI, runtime: any, context: any, child: any, worker: any, report: any) {
-  const integration = await integrateWorkerReport({
-    parent: { integrationWorktree: worker.parentWorktree?.path },
-    child,
-    worker,
-    report,
-  });
-  const workerResult = integrationExecution(report, integration, child);
-  await runtime.scheduler.markWorkerIntegrated(worker, integration);
-  await moveIssue(pi, child.identifier, workerResult.outcome === "done" ? "Done" : "In Review");
-  const event = { parent: context.parent, child, workerResult };
-  appendWorkerTranscript(pi, event);
-  await reportIntegrationToLinear(pi, event);
-  await runtime.scheduler.markWorkerFinalized(worker);
-  return { child, workerResult };
-}
-
-async function waitForAndIntegrateWorker(pi: ExtensionAPI, runtime: any, context: any, child: any, worker: any) {
-  const report = await runtime.scheduler.waitForReport(worker);
-  return integrateWorker(pi, runtime, context, child, worker, report);
-}
-
-async function runVisibleSequentialQueue(pi: ExtensionAPI, runtime: any, queue: any, source: "manual" | "watch") {
-  const settled = [];
-  const launched = [];
-  let context = await queueContext(pi, queue, source);
-
-  while (true) {
-    settled.push(...await reconcileVisibleQueue(pi, runtime, context));
-    const refreshed = await fetchParentQueue(context.parent.identifier, (key) => loadIssueFromLinear(pi, key));
-    context = await queueContext(pi, refreshed, source);
-
-    if (context.children.length > 0 && context.children.every((child: any) => /^done$/i.test(String(child?.state?.name ?? "")))) {
-      return { settled, launched };
-    }
-
-    const workers = await runtime.scheduler.listWorkers({ repositoryIdentity: context.repositoryIdentity, parentKey: context.parent.identifier });
-    const active = workers.find((worker: any) => ["launching", "running", "recovering"].includes(worker.lifecycle));
-    if (active) {
-      const taskKey = active?.registry?.taskKey;
-      const activeChild = context.children.find((entry: any) => entry?.identifier === taskKey);
-      if (!activeChild) return { settled, launched };
-      settled.push(await waitForAndIntegrateWorker(pi, runtime, context, activeChild, active));
-      continue;
-    }
-
-    let child;
-    try {
-      ({ child } = selectNextRunnableChild(context));
-    } catch (error) {
-      pi.appendEntry("crosby-no-runnable-child", {
-        parentIssueKey: context.parent.identifier,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      return { settled, launched };
-    }
-
-    const result = await runtime.scheduler.launch({
-      parent: context.parent,
-      child,
-      prompt: buildRalphLoopPrompt(child),
-      sourcePath: context.cwd,
-      repositoryIdentity: context.repositoryIdentity,
-      workspace: runtime.workspace,
-    });
-    await moveIssue(pi, child.identifier, "Building");
-    pi.appendEntry("crosby-worker-started", {
-      parentIssueKey: context.parent.identifier,
-      topLevelIssueKey: child.identifier,
-      issueKey: child.identifier,
-      issuePath: child.identifier,
-      cwd: context.cwd,
-    });
-    launched.push({ child, result, event: { parent: context.parent, child, topLevelChild: child, path: [child], cwd: context.cwd } });
-    settled.push(await waitForAndIntegrateWorker(pi, runtime, context, child, result.worker));
-  }
-}
-
-async function runVisibleSchedulingCycle(pi: ExtensionAPI, runtime: any, queues: any[], source: "manual" | "watch") {
-  const results = [];
-  for (const queue of queues) {
-    results.push(await runVisibleSequentialQueue(pi, runtime, queue, source));
-  }
-  return {
-    settled: results.flatMap((result) => result.settled),
-    launched: results.flatMap((result) => result.launched),
-  };
-}
-
-const supervisorTaskSchema = Type.Object({
-  parentKey: Type.String({ description: "Linear parent queue key, for example COA-360." }),
-  taskKey: Type.String({ description: "Explicit Linear child task key, for example COA-367." }),
-});
-const supervisorAskSchema = Type.Object({
-  parentKey: Type.String({ description: "Linear parent queue key, for example COA-360." }),
-  taskKey: Type.String({ description: "Explicit Linear child task key, for example COA-367." }),
-  message: Type.String({ description: "The operator message to send to the retained worker." }),
-});
-
-function supervisorToolResult(parentKey: string, status: any, prefix?: string) {
-  const report = buildSupervisorStatusReport({ parentKey, status });
-  return {
-    content: [{ type: "text" as const, text: prefix ? `${prefix}\n\n${report}` : report }],
-    details: status,
-  };
-}
-
-async function createSupervisorForTask(pi: ExtensionAPI, parentKey: string, taskKey: string) {
-  const queue = await fetchParentQueue(parentKey, (key) => loadIssueFromLinear(pi, key));
-  if (!queue.children.some((child: any) => child?.identifier === taskKey)) {
-    throw new Error(`Task ${taskKey} is not a child of ${queue.parent.identifier}. Recovery: provide the parent queue key that owns the task.`);
-  }
-  const cwd = resolveIssueWorkingDirectory(queue.parent).cwd;
-  const repositoryIdentity = await resolveRepositoryIdentity(pi, cwd);
-  requireCrosbyHerdrContext();
-  const invokeHerdrCli = createHerdrCliInvoker({ exec: (command: string, args: string[]) => pi.exec(command, args) });
-  const herdr = createHerdrClient({ invoke: invokeHerdrCli });
-  return createCrosbySupervisor({
-    registryRoot: path.join(homedir(), ".pi", "crosby"),
-    repositoryIdentity,
-    parentKey: queue.parent.identifier,
-    herdr,
-    cleanupTask: async ({ worker }: any) => {
-      const taskPath = String(worker?.task?.path ?? "").trim();
-      if (!taskPath) throw new Error("Recorded Crosby task has no managed worktree path to clean up.");
-      const controlPath = String(worker?.parentWorktree?.path ?? cwd).trim();
-      await execGit(pi, ["-C", controlPath, "worktree", "remove", "--force", taskPath], cwd);
-    },
-  });
-}
-
 const workerCompletionReportSchema = Type.Object({
   outcome: Type.Literal("complete"),
   taskOutcome: Type.String(),
@@ -803,71 +383,6 @@ function registerWorkerReportTool(pi: ExtensionAPI) {
       };
     },
   });
-}
-
-function registerSupervisorTools(pi: ExtensionAPI) {
-  const taskTool = (
-    name: string,
-    label: string,
-    description: string,
-    promptSnippet: string,
-    promptGuidelines: string[],
-    operation: "status" | "pause" | "resume",
-  ) => {
-    pi.registerTool({
-      name,
-      label,
-      description,
-      promptSnippet,
-      promptGuidelines,
-      parameters: supervisorTaskSchema,
-      async execute(_toolCallId, params) {
-        const supervisor = await createSupervisorForTask(pi, params.parentKey, params.taskKey);
-        const status = await supervisor[operation]({ taskKey: params.taskKey });
-        return supervisorToolResult(params.parentKey, status);
-      },
-    });
-  };
-
-  taskTool("crosby_task_status", "Crosby Task Status", "Show compact supervisor status for an explicit Crosby task key.", "Show Crosby task status.", ["Use crosby_task_status when an operator asks about a Crosby task or worker."], "status");
-  taskTool("crosby_task_pause", "Pause Crosby Task", "Ask a running Crosby worker to pause and retain its task evidence.", "Pause a Crosby task.", ["Use crosby_task_pause when an operator asks to pause a specific Crosby worker."], "pause");
-  taskTool("crosby_task_resume", "Resume Crosby Task", "Resume a previously paused Crosby worker.", "Resume a Crosby task.", ["Use crosby_task_resume when an operator asks to resume a specific paused Crosby worker."], "resume");
-
-  pi.registerTool({
-    name: "crosby_task_ask",
-    label: "Ask Crosby Task",
-    description: "Send an operator message to an explicit retained Crosby worker.",
-    promptSnippet: "Ask a Crosby worker for an update.",
-    promptGuidelines: ["Use crosby_task_ask when an operator conversationally asks a specific Crosby worker a question."],
-    parameters: supervisorAskSchema,
-    async execute(_toolCallId, params) {
-      const supervisor = await createSupervisorForTask(pi, params.parentKey, params.taskKey);
-      const status = await supervisor.ask({ taskKey: params.taskKey, message: params.message });
-      return supervisorToolResult(params.parentKey, status, "Message sent.");
-    },
-  });
-
-  for (const [name, label, action] of [["crosby_task_stop", "Stop Crosby Task", "stop"], ["crosby_task_cleanup", "Clean Up Crosby Task", "cleanup"]] as const) {
-    pi.registerTool({
-      name,
-      label,
-      description: `${action === "stop" ? "Stop a worker while retaining its task worktree." : "Remove a retained Crosby tab and managed task worktree."} Confirmation is required.`,
-      promptSnippet: `${action === "stop" ? "Stop" : "Clean up"} a Crosby task.`,
-      promptGuidelines: [`Use ${name} when an operator asks to ${action} a specific Crosby task; it always confirms the reported impact first.`],
-      parameters: supervisorTaskSchema,
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        const supervisor = await createSupervisorForTask(pi, params.parentKey, params.taskKey);
-        const preview = await supervisor[action]({ taskKey: params.taskKey });
-        const confirmation = await ctx.ui.confirm(
-          `${action === "stop" ? "Stop" : "Clean up"} Crosby task ${params.taskKey}?`,
-          `${buildSupervisorStatusReport({ parentKey: params.parentKey, status: preview.impact })}\n\n${action === "stop" ? "This closes the worker tab but retains its worktree and branch." : "This permanently removes the retained worker tab and managed task worktree."}`,
-        );
-        if (!confirmation) return supervisorToolResult(params.parentKey, preview.impact, "Cancelled; no destructive action was taken.");
-        const status = await supervisor[action]({ taskKey: params.taskKey, confirmed: true });
-        return supervisorToolResult(params.parentKey, status, `${action === "stop" ? "Stopped" : "Cleaned up"}.`);
-      },
-    });
-  }
 }
 
 function createDashboardController(ctx: any, queue: any, mode: string) {
@@ -924,7 +439,6 @@ export default function crosbyExtension(pi: ExtensionAPI) {
     new Text(theme.fg("accent", formatBuildProgress(entry.data)), 0, 0)
   ));
   registerWorkerReportTool(pi);
-  registerSupervisorTools(pi);
   pi.registerCommand("crosby", {
     description: "Run or resume a sequential Herdr-visible Crosby build from a local build folder",
     handler: async (args, ctx) => {
