@@ -35,6 +35,22 @@ function responseWithState(value, operation) {
   return { ...response, state: agentState(response.state, operation) };
 }
 
+function validateWindowsPiArgs(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (/^--[a-z0-9-]+$/i.test(argument) && !["--model", "--thinking"].includes(argument)) continue;
+    if (argument === "--model" && /^[A-Za-z0-9._~:/-]+$/.test(args[index + 1] ?? "")) {
+      index += 1;
+      continue;
+    }
+    if (argument === "--thinking" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(args[index + 1])) {
+      index += 1;
+      continue;
+    }
+    fail("Windows shell Pi startup received unsafe or unsupported arguments.");
+  }
+}
+
 export function createHerdrClient({ invoke, platform = process.platform } = {}) {
   if (typeof invoke !== "function") fail("Herdr client requires an invoke(operation, input) function.");
 
@@ -93,9 +109,7 @@ export function createHerdrClient({ invoke, platform = process.platform } = {}) 
       }
 
       if (platform === "win32") {
-        if (args.some((argument) => !/^--[a-z0-9-]+$/i.test(argument))) {
-          fail("Windows shell Pi startup accepts only safe flag arguments; configure model and thinking after launch.");
-        }
+        validateWindowsPiArgs(args);
         await call("runPaneCommand", { pane: paneId, command: ["pi", ...args].join(" ") });
         const deadline = Date.now() + 30_000;
         let detected;

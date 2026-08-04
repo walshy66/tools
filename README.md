@@ -11,6 +11,7 @@ Shared workflow and agent assets for multiple tools.
 - Pi is configured to load shared skills directly from `shared-workflows/portable/skills`.
 - Pi, Claude Code, and Codex point to the shared manifest through their local `AGENTS.md` files.
 - Pi runtime extensions live under `shared-workflows/pi/extensions/`.
+- Crosby uses GitHub Issues as its execution source of truth; bootstrap labels with `scripts/bootstrap-github-labels.sh`.
 - `shared-workflows/pi/extensions/fly/` wraps `flyctl` for Fly.io operations and slash commands.
 - Pi must be pointed at `shared-workflows/pi/extensions/` (or the folder must be copied/symlinked into `.pi/extensions/`) for runtime loading.
 - Codex currently keeps only runtime-specific assets outside the shared portable workflow set.
@@ -119,7 +120,7 @@ The current portable templates include:
 The current portable templates include:
 
 - `prd-template`
-- `issue-slice-template`
+- `issue-slice-template` — GitHub Crosby child issue contract
 - `claude-code-project-template`
 
 ## Notes

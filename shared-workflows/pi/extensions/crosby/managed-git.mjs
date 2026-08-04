@@ -207,6 +207,10 @@ export async function serializedMerge({ parentWorktreePath, taskBranch, message 
   const branch = text(taskBranch, "taskBranch");
   const lockPath = await acquireMergeLock(parent);
   try {
+    const ancestry = await git(["-C", parent, "merge-base", "--is-ancestor", branch, "HEAD"], undefined, { allowFailure: true });
+    if (ancestry.code === 0) {
+      return { merged: false, alreadyMerged: true, sha: await gitOutput(["-C", parent, "rev-parse", "HEAD"]) };
+    }
     const result = await git(["-C", parent, "merge", "--no-ff", "--no-commit", branch], undefined, { allowFailure: true });
     if (result.code !== 0) {
       await git(["-C", parent, "merge", "--abort"], undefined, { allowFailure: true });

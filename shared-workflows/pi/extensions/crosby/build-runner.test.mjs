@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseBuildCommandArgs, runBuild } from "./build-runner.mjs";
+import { formatBuildProgress, parseBuildCommandArgs, runBuild, summarizeBuildProgress } from "./build-runner.mjs";
 import { createRegistryStore, readRegistry, updateRegistry } from "./registry.mjs";
 
 const tasks = `# Build: 001-example
@@ -49,17 +49,61 @@ test("parses run, resume, and status build commands", () => {
   assert.throws(() => parseBuildCommandArgs("run"), /Usage/);
 });
 
+test("summarizes every authored task without mutating tasks.md", () => {
+  const build = {
+    buildId: "001-example",
+    tasks: [
+      { id: "task-001", title: "First", executionMode: "AFK" },
+      { id: "task-002", title: "Second", executionMode: "AFK" },
+      { id: "task-003", title: "Approve", executionMode: "HITL" },
+    ],
+  };
+  const progress = summarizeBuildProgress({
+    build,
+    registry: {
+      queueState: "ready",
+      currentTask: "task-002",
+      workers: {
+        "task-001": { lifecycle: "integrated" },
+        "task-002": { lifecycle: "reported" },
+      },
+    },
+  });
+
+  assert.deepEqual(progress.tasks.map(({ id, state }) => ({ id, state })), [
+    { id: "task-001", state: "completed" },
+    { id: "task-002", state: "awaiting integration" },
+    { id: "task-003", state: "human gate" },
+  ]);
+  assert.match(formatBuildProgress(progress), /1\/3 completed; 2 remaining; current: task-002/);
+  assert.match(formatBuildProgress(progress), /✓ task-001 completed/);
+  assert.match(formatBuildProgress(progress), /! task-002 awaiting integration/);
+});
+
 test("runs tasks strictly in authored order and requires explicit complete reports", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "crosby-build-"));
   const buildFolder = path.join(root, "specs", "001-example");
   await mkdir(buildFolder, { recursive: true });
   await writeFile(path.join(buildFolder, "tasks.md"), tasks);
   const calls = [];
+  const progressUpdates = [];
   const storeRoot = path.join(root, "registry");
+  const expectedStore = createRegistryStore({
+    root: storeRoot,
+    repositoryIdentity: root,
+    parentKey: "crosby/001-example",
+    buildId: "001-example",
+    buildFolder,
+    parentBranch: "crosby/001-example",
+    spaceId: "space-1",
+  });
   const supervisor = {
     ensureSupervisor: async () => {},
     launchWorker: async ({ task, prompt, modelSelection }) => {
+      assert.equal((await readRegistry(expectedStore)).currentTask, null, "progress tracking must not claim the queue gate");
       assert.match(prompt, /Read the complete task contract from .*tasks\.md/);
+      assert.match(prompt, /complete allowed file scope is: src\/(first|second)\.mjs/);
+      assert.match(prompt, /submit a blocked report naming the missing path/);
       assert.doesNotMatch(prompt, /First works\.|Second works\./);
       const expectedModel = task.id === "task-001" ? "openai-codex/gpt-5.6-luna" : "openai-codex/gpt-5.6-terra";
       assert.deepEqual(modelSelection, { model: expectedModel, thinking: "medium", source: "orchestrator" });
@@ -92,11 +136,16 @@ test("runs tasks strictly in authored order and requires explicit complete repor
       }),
       waitForReport: async ({ task }) => { calls.push(`report:${task.id}`); return { outcome: "complete" }; },
       integrateTask: async ({ task }) => { calls.push(`integrate:${task.id}`); },
+      onProgress: async (progress) => { progressUpdates.push(progress); },
     },
   });
   assert.deepEqual(calls, ["launch:task-001", "report:task-001", "integrate:task-001", "launch:task-002", "report:task-002", "integrate:task-002"]);
   assert.equal(result.completed.length, 2);
-  const firstWorker = (await readRegistry(result.registry)).workers["task-001"];
+  const finalRegistry = await readRegistry(result.registry);
+  assert.equal(Object.keys(finalRegistry.tasks).length, 2);
+  assert.equal(finalRegistry.currentTask, null);
+  assert.deepEqual(progressUpdates.map((progress) => [progress.completed, progress.remaining]), [[1, 1], [2, 0]]);
+  const firstWorker = finalRegistry.workers["task-001"];
   assert.deepEqual(firstWorker.taskWorktree, {
     path: "/work/task-001",
     branch: "crosby/001-example-task-001",

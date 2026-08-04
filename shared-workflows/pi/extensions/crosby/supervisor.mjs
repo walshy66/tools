@@ -66,7 +66,14 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
       agent: text(agent, "supervisor agent"),
     };
     const registry = await readRegistry(store);
-    if (registry.supervisor) return { supervisor: registry.supervisor, adopted: true };
+    if (registry.supervisor) {
+      const matches = registry.supervisor.workspace === identity.workspace
+        && registry.supervisor.pane === identity.pane
+        && registry.supervisor.agent === identity.agent;
+      if (matches) return { supervisor: registry.supervisor, adopted: true };
+      await updateRegistry(store, (current) => ({ ...current, supervisor: identity }));
+      return { supervisor: identity, adopted: false, rebound: true, previousSupervisor: registry.supervisor };
+    }
     await updateRegistry(store, (current) => ({ ...current, supervisor: identity }));
     return { supervisor: identity, adopted: false };
   }
@@ -102,16 +109,16 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
 
     let tab;
     try {
-      tab = await client.createTaskTab({ workspace: store.spaceId, label: id, cwd: workingDirectory, focus: false, env });
+      tab = await client.createTaskTab({ workspace: store.spaceId, label: task?.tabLabel ?? `Task ${id}`, cwd: workingDirectory, focus: false, env });
       await updateRegistry(store, (current) => ({
         ...current,
         workers: { ...current.workers, [id]: { ...current.workers[id], tab: tab.tab, pane: tab.pane } },
       }));
-      const started = await client.startPiAgent({ pane: tab.pane, name: workerAgentName(store, id), agentArgs: ["--approve"] });
-      if (workerModel) {
-        await client.promptAgent({ agent: started.name, prompt: `/model ${workerModel.model}`, wait: false });
-        await client.promptAgent({ agent: started.name, prompt: `/thinking ${workerModel.thinking}`, wait: false });
-      }
+      const agentArgs = [
+        "--approve",
+        ...(workerModel ? ["--model", workerModel.model, "--thinking", workerModel.thinking] : []),
+      ];
+      const started = await client.startPiAgent({ pane: tab.pane, name: workerAgentName(store, id), agentArgs });
       await client.promptAgent({ agent: started.name, prompt: workerPrompt, wait: false });
       let worker = await updateRegistry(store, (current) => ({
         ...current,

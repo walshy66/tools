@@ -38,12 +38,56 @@ function validTaskWorktree(value) {
     && [value.path, value.branch, value.baseSha].every((field) => typeof field === "string" && field.trim());
 }
 
+function taskState(task, worker) {
+  if (worker?.lifecycle === "integrated") return "completed";
+  if (worker?.lifecycle === "reported") return "awaiting integration";
+  if (["working", "recovered"].includes(worker?.lifecycle)) return "running";
+  if (worker?.lifecycle === "paused") return "paused";
+  if (["blocked", "failed", "cancelled", "review-required", "launch-failed"].includes(worker?.lifecycle)) return worker.lifecycle;
+  return task.executionMode === "HITL" ? "human gate" : "pending";
+}
+
+function firstOutstandingTask(build, workers) {
+  return build.tasks.find((task) => workers?.[task.id]?.lifecycle !== "integrated")?.id ?? null;
+}
+
+export function summarizeBuildProgress({ build, registry } = {}) {
+  if (!build?.buildId || !Array.isArray(build.tasks) || !registry) throw new BuildRunnerError("Build progress requires a loaded build and registry.");
+  const tasks = build.tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    state: taskState(task, registry.workers?.[task.id]),
+  }));
+  const completed = tasks.filter((task) => task.state === "completed").length;
+  return {
+    buildId: build.buildId,
+    total: tasks.length,
+    completed,
+    remaining: tasks.length - completed,
+    currentTask: registry.currentTask ?? firstOutstandingTask(build, registry.workers),
+    queueState: registry.queueState,
+    tasks,
+  };
+}
+
+export function formatBuildProgress(status) {
+  const progress = status?.tasks ? status : summarizeBuildProgress(status);
+  const marker = (state) => state === "completed" ? "✓" : state === "running" ? "▶" : state === "awaiting integration" ? "!" : state === "human gate" ? "◆" : "·";
+  return [
+    `Crosby ${progress.buildId}: ${progress.completed}/${progress.total} completed; ${progress.remaining} remaining; current: ${progress.currentTask ?? "none"}.`,
+    ...progress.tasks.map((task) => `${marker(task.state)} ${task.id} ${task.state} — ${task.title}`),
+  ].join("\n");
+}
+
 function taskPrompt(build, task) {
   const taskListPath = path.join(build.folder, "tasks.md");
   return [
     `You are the Crosby worker for ${build.buildId}, ${task.id}: ${task.title}.`,
     `Read the complete task contract from ${taskListPath} and follow the ${task.id} outcome, acceptance criteria, instructions, and guardrails exactly.`,
+    `Your complete allowed file scope is: ${task.fileScope.join(", ")}. Do not edit or commit any other path.`,
+    "If acceptance requires an out-of-scope path, submit a blocked report naming the missing path instead of changing it.",
     "Read the applicable AGENTS.md chain before editing and work only in the assigned worktree.",
+    "Before reporting, compare the complete task diff with the declared file scope and run every declared verification command; do not report skipped required checks as complete.",
     "When finished, submit exactly one explicit crosby_worker_report terminal report. Do not report completion from idle state.",
   ].join("\n");
 }
@@ -66,7 +110,8 @@ export async function readBuildStatus({ buildFolder, sourcePath, workspace, regi
     parentBranch: build.parentBranch,
     spaceId: workspace,
   });
-  return { build, registry: await readRegistry(store) };
+  const registry = await readRegistry(store);
+  return { build, registry, progress: summarizeBuildProgress({ build, registry }) };
 }
 
 export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent, registryRoot, repositoryIdentity, adapters = {} } = {}) {
@@ -100,7 +145,10 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
   const supervisor = ops.createHerdrSupervisor({ client: adapters.herdrClient, store, emitLifecycle: adapters.emitLifecycle });
   if (!supervisor || typeof supervisor.ensureSupervisor !== "function") throw new BuildRunnerError("A Herdr supervisor adapter is required.");
   await supervisor.ensureSupervisor({ workspace, pane, agent });
-  const initialRegistry = await readRegistry(store);
+  const initialRegistry = await updateRegistry(store, (registry) => ({
+    ...registry,
+    tasks: Object.fromEntries(build.tasks.map((task) => [task.id, structuredClone(task)])),
+  }));
   const hasExecutionEvidence = Object.values(initialRegistry.workers ?? {}).some((worker) =>
     worker?.agent
     || worker?.report
@@ -194,11 +242,17 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     if (report.outcome !== "complete") throw new BuildRunnerError(`Worker ${task.id} reported ${report.outcome}; queue stopped.`);
     if (typeof adapters.integrateTask !== "function") throw new BuildRunnerError("A task integration adapter is required before advancing the build.");
     await adapters.integrateTask({ task, taskWorktree, parentWorktree: parent, report });
-    await updateRegistry(store, (registry) => ({
-      ...registry,
-      workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "integrated", report } },
-    }));
+    const updatedRegistry = await updateRegistry(store, (registry) => {
+      const workers = { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "integrated", report } };
+      return { ...registry, workers };
+    });
+    if (typeof adapters.onTaskIntegrated === "function") {
+      await adapters.onTaskIntegrated({ task, taskWorktree, parentWorktree: parent, report, registry: updatedRegistry });
+    }
     completed.push({ task, worker, report });
+    if (typeof ops.onProgress === "function") {
+      await ops.onProgress(summarizeBuildProgress({ build, registry: updatedRegistry }));
+    }
   }
   return { build, parent, completed, registry: store };
 }

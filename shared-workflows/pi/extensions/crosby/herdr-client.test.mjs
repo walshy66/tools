@@ -69,14 +69,29 @@ test("starts Pi through the interactive Windows shell and names it after detecti
   const client = createHerdrClient({ invoke: fake.invoke, platform: "win32" });
 
   assert.deepEqual(
-    await client.startPiAgent({ pane: "pane-1", name: "task-001", agentArgs: ["--approve"] }),
+    await client.startPiAgent({
+      pane: "pane-1",
+      name: "task-001",
+      agentArgs: ["--approve", "--model", "openai-codex/gpt-5.6-luna", "--thinking", "medium"],
+    }),
     { name: "task-001", pane: "pane-1", state: "idle" },
   );
   assert.deepEqual(fake.calls, [
-    { operation: "runPaneCommand", input: { pane: "pane-1", command: "pi --approve" } },
+    { operation: "runPaneCommand", input: { pane: "pane-1", command: "pi --approve --model openai-codex/gpt-5.6-luna --thinking medium" } },
     { operation: "inspectAgent", input: { agent: "pane-1" } },
     { operation: "renameAgent", input: { agent: "pane-1", name: "task-001" } },
   ]);
+});
+
+test("rejects unsafe Windows Pi startup values before invoking the shell", async () => {
+  const fake = fakeHerdr({});
+  const client = createHerdrClient({ invoke: fake.invoke, platform: "win32" });
+
+  await assert.rejects(
+    client.startPiAgent({ pane: "pane-1", agentArgs: ["--model", "safe/model;Remove-Item"] }),
+    /unsafe or unsupported arguments.*Recovery/i,
+  );
+  assert.deepEqual(fake.calls, []);
 });
 
 test("fails closed with recovery guidance for adapter failures and malformed Herdr responses", async () => {

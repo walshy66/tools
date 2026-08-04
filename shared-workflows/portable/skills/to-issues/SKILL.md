@@ -1,103 +1,140 @@
 ---
 name: to-issues
-description: Break a plan, spec, or PRD into independently grabbable issues. Use when you need vertical slices, implementation tickets, or a clean execution sequence from higher-level planning.
+description: Break a plan, spec, or PRD into independently grabbable GitHub issues. Use when you need vertical slices, implementation tickets, or a clean execution sequence from higher-level planning.
 ---
 
 # To Issues
 
-Convert a plan or PRD into thin, vertical-slice Linear sub-issues that can be worked independently.
+Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that can be worked independently.
 
 ## When to Use
 
-- A PRD, spec, or plan needs execution tickets
-- You want small, independently testable slices of work
-- You need dependencies made explicit
-- You want to avoid horizontal, layer-by-layer issue breakdowns
-- You want approved slices created as Linear child issues under the originating parent issue
+- A PRD, spec, or plan needs execution tickets.
+- You want small, independently testable slices of work.
+- You need dependencies made explicit.
+- You want to avoid horizontal, layer-by-layer issue breakdowns.
+- You want approved slices created as GitHub child issues linked to an originating parent issue.
 
 ## Core Principles
 
 1. Prefer vertical slices that cut through the full stack.
 2. Each issue should deliver a narrow, complete outcome.
-3. Keep blocker relationships explicit.
+3. Keep blocker relationships explicit in issue bodies and parent ordering.
 4. Separate human-decision slices from buildable slices.
 5. Prefer many thin issues over a few thick ones.
-6. Treat Linear as the committed execution view, not the drafting surface.
-7. Never create Linear sub-issues before explicit user approval.
-8. Every executable child issue must declare a Crosby task contract: `Parallel`, `File scope`, and `Verification`.
+6. Treat GitHub Issues as the committed execution view, not the drafting surface.
+7. Make AFK/buildable issues parallel-ready by giving Crosby a tight execution envelope: expected files, do-not-touch boundaries, test command, and advisory locks.
+8. Never create GitHub child issues before explicit user approval.
 
 ## Workflow
 
 ### 1) Gather the source material
-- Read the plan, spec, or PRD
-- Identify the user stories and the minimum viable outcome
-- Resolve the originating Linear parent issue from the current feature context
-- Load the parent issue metadata needed for child creation, including:
-  - parent issue key
-  - parent project
+
+- Read the plan, spec, or PRD.
+- Identify the user stories and the minimum viable outcome.
+- Resolve the originating GitHub parent issue from the current feature context.
+- Load the parent issue metadata needed for child creation:
+  - parent issue number or URL
+  - parent title/body
   - parent labels
-- Prefer raw Linear API verification for labels when the CLI `issue view` output is incomplete or suspect; do not assume the parent has no labels unless verified
-- If the parent issue cannot be resolved confidently, or its project/labels cannot be loaded confidently, stop and ask the user
+  - parent milestone, if any
+- Use GitHub CLI when available:
+
+  ```bash
+  gh issue view <PARENT> --json number,title,body,state,labels,milestone,url
+  ```
+
+- If the parent issue cannot be resolved confidently, or its labels/milestone cannot be loaded confidently, stop and ask the user.
 
 ### 2) Draft slices
-- Break the work into independent vertical slices
-- Ensure each issue can be understood and tested alone
-- Label blocking dependencies clearly
-- Give every executable slice an explicit Crosby task contract:
-  - `Parallel: allowed` only when blockers are resolved and its file scope does not overlap any task intended to run with it; otherwise use `Parallel: sequential`.
-  - `File scope: repository-relative paths only`, listing the specific files or directories the task may change. Reject or flag absolute paths, drive-qualified paths, `.`, `/`, glob-only scopes, and ambiguous whole-repository scopes; split or clarify the slice instead.
-  - `Verification: <command>` for buildable work, or `Verification: none` only for documentation-only/copy-only work where no meaningful automated check exists.
-- Propose execution windows or grouping when useful
+
+- Break the work into independent vertical slices.
+- Ensure each issue can be understood and tested alone.
+- Label blocking dependencies clearly in the proposed issue body.
+- Propose execution windows or grouping when useful.
+- For every AFK/buildable issue, draft a Crosby execution envelope:
+  - `## Expected Files` — files or directories the worker is expected to touch.
+  - `## Do Not Touch` — files/directories that are explicitly out of scope.
+  - `## Test Command` — the narrowest useful verification command.
+  - `## Crosby Locks` — advisory file/directory/domain locks used to avoid launching conflicting children in parallel.
+- If an AFK issue is too vague to name expected files, tests, and locks, mark it HITL or split/add an investigation issue first.
 
 ### 3) Review with the user
-- Ask whether the granularity feels right
-- Ask whether dependencies are correct
-- Ask whether any slices should be merged or split
-- Ask whether execution windows or grouping should change
-- Do not create any Linear issues yet
+
+- Ask whether the granularity feels right.
+- Ask whether dependencies are correct.
+- Ask whether any slices should be merged or split.
+- Ask whether execution windows or grouping should change.
+- Do not create any GitHub issues yet.
 
 ### 4) Revise local planning artifacts if needed
-- If approved changes materially affect sequencing, blockers, grouping, or scope, update the relevant local planning docs before publishing
-- Typically update `plan.md` when implementation sequencing or dependency structure changes
-- Update `tasks.md` when execution windows or grouped task boundaries are part of the agreed workflow
-- Keep local planning artifacts aligned with the final approved issue structure
+
+- If approved changes materially affect sequencing, blockers, grouping, or scope, update the relevant local planning docs before publishing.
+- Typically update `plan.md` when implementation sequencing or dependency structure changes.
+- Update `tasks.md` when execution windows or grouped task boundaries are part of the agreed workflow.
+- Keep local planning artifacts aligned with the final approved issue structure.
 
 ### 5) Finalize the issue list for approval
-- Present the issue titles in dependency order
-- Include the acceptance criteria and Crosby task contract for each executable issue:
-  ```markdown
-  ## Crosby execution
-  - Parallel: allowed|sequential
-  - File scope:
-    - path/to/file-or-directory
-  - Verification:
-    - command to run
-    # or: none (documentation-only/copy-only work)
-  ```
-- Explicitly ask for approval before creating anything in Linear
 
-### 6) Create Linear sub-issues after approval
-- Only after explicit user approval, create the approved issues in Linear as child issues of the originating parent issue
-- Put each approved executable issue's explicit `## Crosby execution` contract in its Linear description. Do not create an executable issue with any missing field, an invalid/ambiguous file scope, or an unexplained `Verification: none`; return it to drafting instead.
-- Use the Linear CLI to create each child issue under the existing parent
-- Every created child must inherit the parent context:
-  - same Linear project as the parent
-  - same labels as the parent, unless the user explicitly asked for deviations
-- Add the execution-type label to each child in addition to inherited labels:
-  - `AFK` issues → add `AFK` label
-  - `HITL` issues → add `HITL` label
-- Label handling must be additive, not replacing:
-  - Preserve all existing/inherited parent labels
-  - Add `AFK`/`HITL` as an extra label
-  - If the Linear CLI `--label`/`issue update --label` behavior is ambiguous or may replace labels, create the issue first and then use `linear issue label add <issue> <label>` for each missing inherited/type label
-- Set the initial Linear state when creating each child issue:
-  - `AFK` issues → `Ready to Build`
-  - `HITL` issues → `Backlog`
-- Do not leave the initial state to Linear defaults when the issue type is known
-- Do not create a new parent issue
-- After creation, verify each child landed under the correct parent, project, labels, type label, and initial state
-- If verification shows any inherited labels were missed or replaced, immediately re-add the missing labels; never remove existing labels unless the user explicitly requested removal
-- Report the created issue keys, URLs, inherited project, inherited labels, type labels, and initial states back to the user
+- Present the issue titles in dependency order.
+- Include the acceptance criteria for each issue.
+- Include proposed labels for each issue.
+- Explicitly ask for approval before creating anything in GitHub.
+
+### 6) Create GitHub child issues after approval
+
+Only after explicit user approval, create the approved issues in GitHub as child issues linked to the originating parent issue.
+
+Use `gh issue create` for each child. Each created child should include:
+
+- `Parent: #<parent-number>` in the body.
+- Scope and acceptance criteria.
+- Any blocker/dependency notes.
+- For AFK/buildable issues: `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails` sections. `Expected Files`, `Do Not Touch`, `Test Command`, and `Crosby Locks` may be included as explanatory detail, but the four execution sections are authoritative.
+- The same milestone as the parent, when present.
+- Inherited parent labels where appropriate, especially work-type and local-folder routing labels.
+- Type/status/mode labels:
+  - all children: `type:child`
+  - AFK/buildable issues: `mode:afk`, `status:ready-to-build`
+  - HITL/manual issues: `mode:hitl`, `status:ready` or `status:review`
+  - work type: `wt:development` or `wt:process-automation`
+  - optional worker routing labels only when justified: `model:<model-id>` and/or `effort:<low|medium|high|...>`
+
+Default effort guidance:
+
+- Do not add `effort:*` when the repo/Crosby default is appropriate.
+- Use `effort:low` for mechanical, tightly scoped changes.
+- Use `effort:medium` for normal implementation with some design judgement.
+- Reserve `effort:high`+ for high-risk architecture, security, data migration, concurrency, or broad cross-module work.
+
+Example:
+
+```bash
+gh issue create \
+  --title "Add backend validation" \
+  --body "Parent: #122\n\n## Scope\n...\n\n## Expected Files\n- backend/app/validation.py\n- backend/app/tests/test_validation.py\n\n## Do Not Touch\n- frontend/\n- migrations/\n\n## Crosby Locks\n- backend/app/validation.py\n\n## Test Command\npytest backend/app/tests/test_validation.py\n\n## Acceptance Criteria\n- [ ] ..." \
+  --label "type:child,status:ready-to-build,mode:afk,wt:development" \
+  --milestone "my-feature"
+```
+
+After creating the children:
+
+- Add or update a parent comment containing the child issue list in dependency order.
+- Use `scripts/bootstrap-github-labels.sh` before creating issues when required labels are absent; label creation/update must be idempotent.
+- Do not add repository-folder routing labels. Crosby validates the issue repository against the current checkout remote.
+- If safely possible, update the parent issue body to include a `## Child Issues` checklist:
+
+  ```markdown
+  ## Child Issues
+
+  - [ ] #123 Add backend validation
+  - [ ] #124 Add frontend empty state
+  ```
+
+- Do not create a new parent issue.
+- Verify each child has the correct parent reference, milestone, labels, and initial status label.
+- If verification shows inherited labels were missed, add the missing labels; never remove existing labels unless the user explicitly requested removal.
+- Report the created issue numbers, URLs, inherited milestone, inherited labels, mode labels, and initial status labels back to the user.
 
 ## Output Format
 
@@ -106,23 +143,26 @@ Use a numbered list where each proposed issue includes:
 - Title
 - Type: HITL or AFK
 - Blocked by
-- Execution window / grouping (if applicable)
+- Execution window / grouping, if applicable
+- Parallel readiness: ready / not ready, with reason
 - User stories covered
+- Scope
+- Expected files (AFK required)
+- Do not touch (AFK required)
+- Crosby locks (AFK required)
+- Test command (AFK required)
 - Acceptance criteria
-- Crosby execution contract:
-  - Parallel: `allowed` or `sequential`
-  - File scope: explicit repository-relative files/directories
-  - Verification: commands or `none` for documentation-only/copy-only work
+- Proposed labels, including any justified `model:*` or `effort:*` override
 
 After approval and creation, also report:
 
-- Linear parent issue
-- Created child issue keys
+- GitHub parent issue
+- Created child issue numbers
 - Created child issue URLs
-- Created child inherited project
+- Created child milestone
 - Created child inherited labels
-- Created child type labels (`AFK` or `HITL`)
-- Created child initial states
+- Created child mode labels (`mode:afk` or `mode:hitl`)
+- Created child initial status labels
 
 ## Quality Checks
 
@@ -130,15 +170,14 @@ After approval and creation, also report:
 - Does each issue deliver a complete vertical slice?
 - Are blockers minimal and realistic?
 - Would the issue list support incremental delivery?
+- Is each AFK/buildable issue parallel-ready with expected files, do-not-touch boundaries, a narrow test command, and Crosby locks?
+- Are vague or discovery-heavy items marked HITL or split into investigation-first issues instead of AFK parallel work?
+- Are `model:*` and `effort:*` labels used only when the task justifies overriding defaults?
 - Are the local planning artifacts still aligned with the approved issue breakdown?
-- Has explicit user approval been captured before Linear creation?
-- Will every created child inherit the parent project and labels?
-- Will every created child receive the correct additive `AFK` or `HITL` label without replacing inherited labels?
-- Was that inheritance and type-label assignment verified after creation?
-- Does every executable issue description contain `Parallel: allowed|sequential`, an explicit repository-relative `File scope`, and `Verification` commands or `none`?
-- Are `Parallel: allowed` tasks free of unresolved blockers and non-overlapping in file scope with their proposed concurrent peers?
-- Were absolute, drive-qualified, root, glob-only, and whole-repository file scopes rejected or flagged for clarification?
-- Is `Verification: none` limited to documentation-only/copy-only work and explicitly justified?
+- Has explicit user approval been captured before GitHub issue creation?
+- Will every created child inherit the parent milestone and relevant labels?
+- Will every created child receive the correct additive `mode:*` and `status:*` labels without replacing inherited labels?
+- Was inheritance and type/status/mode assignment verified after creation?
 
 ## Troubleshooting
 
@@ -152,36 +191,24 @@ After approval and creation, also report:
 - Reorder the list and make blockers explicit.
 
 **Execution windows changed the structure**
-- Update `plan.md` and/or `tasks.md` before creating Linear issues.
+- Update `plan.md` and/or `tasks.md` before creating GitHub issues.
 
-**Parent Linear issue cannot be resolved**
-- Stop and ask the user to provide or confirm the parent issue key.
+**Parent GitHub issue cannot be resolved**
+- Stop and ask the user to provide or confirm the parent issue number or URL.
 
 **User has not explicitly approved the issue set**
-- Do not create any Linear issues.
+- Do not create any GitHub issues.
 
-**Linear CLI fails**
-- Tell the user to check Linear CLI authentication and try again.
+**GitHub CLI fails**
+- Tell the user to check `gh` installation/authentication and try again.
 
-**Created issues landed in the wrong default state**
-- Re-run creation or immediately correct the child issue states based on type:
-  - `AFK` → `Ready to Build`
-  - `HITL` → `Backlog`
-- Do not leave typed execution issues in an unintended default workflow state.
+**Created issues landed with the wrong labels**
+- Immediately correct the child issue labels based on type:
+  - AFK → `type:child`, `mode:afk`, `status:ready-to-build`
+  - HITL → `type:child`, `mode:hitl`, `status:ready` or `status:review`
+- Do not leave typed execution issues without a clear status label.
 
-**Created issues did not inherit the parent labels or project**
-- Immediately correct the child issues so they match the parent project and labels.
-- Use additive label commands such as `linear issue label add <issue> <label>` so existing labels are preserved.
+**Created issues did not inherit the parent milestone or labels**
+- Immediately correct the child issues so they match the parent milestone and relevant labels.
+- Use additive label commands (`gh issue edit <issue> --add-label <label>`) so existing labels are preserved.
 - If the parent metadata could not be resolved confidently, stop and ask the user before creating additional children.
-
-**Task contract is missing or unsafe**
-- Do not create the issue. Add all three Crosby fields before returning it for approval.
-- Replace an absolute or ambiguous whole-repository scope with the smallest repository-relative files/directories that the slice needs; split the slice if that is not possible.
-- Change `Parallel` to `sequential` when blockers are unresolved or scopes overlap, and replace unjustified `Verification: none` with a concrete command.
-
-**Adding AFK/HITL labels removed existing labels**
-- Treat this as an error.
-- Re-fetch the parent labels using Linear API if needed.
-- Re-add all missing inherited labels to the affected children.
-- Keep the new `AFK`/`HITL` label as well.
-- Do not use any label command that replaces the full label set unless explicitly asked by the user.

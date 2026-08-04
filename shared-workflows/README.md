@@ -1,6 +1,17 @@
 # Shared Workflows
 
-Canonical shared content for tools and agents.
+Canonical shared content for tools and agents. GitHub Issues are the execution source of truth for Crosby.
+
+## GitHub Crosby setup
+
+From a GitHub repository with `gh` authenticated, bootstrap the workflow labels:
+
+```bash
+./scripts/bootstrap-github-labels.sh OWNER/REPO
+```
+
+`to-issues` creates a parent issue and ordered child issues. Automated children use `type:child`, `status:ready-to-build`, `mode:afk`, and a work-type label. Each child body must include `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails` sections. `model:` and `effort:` labels are advisory hints; Crosby makes the final model selection.
+
 
 ## Manifest
 

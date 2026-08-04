@@ -25,6 +25,7 @@ export async function persistWorkerReport({ report, env = process.env, emitHerdr
   });
   const existingRegistry = await readRegistry(store);
   if (!existingRegistry.workers?.[taskKey]) throw new Error(`No registered Crosby worker exists for ${taskKey}. Recovery: relaunch the task from the Crosby supervisor.`);
+  const wasBlocked = existingRegistry.workers[taskKey].report?.outcome === "blocked";
 
   const registry = await updateRegistry(store, (current) => {
     const lifecycle = validated.outcome === "complete" ? "reported" : validated.outcome;
@@ -43,8 +44,12 @@ export async function persistWorkerReport({ report, env = process.env, emitHerdr
   });
   const saved = registry.workers[taskKey];
 
-  if (validated.outcome === "blocked" && typeof emitHerdrBlocked === "function") {
-    emitHerdrBlocked({ active: true, label: `${taskKey}: ${validated.summary}` });
+  if (typeof emitHerdrBlocked === "function") {
+    if (validated.outcome === "blocked" && !wasBlocked) {
+      emitHerdrBlocked({ active: true, label: `${taskKey}: ${validated.summary}` });
+    } else if (validated.outcome !== "blocked" && wasBlocked) {
+      emitHerdrBlocked({ active: false });
+    }
   }
   return saved;
 }

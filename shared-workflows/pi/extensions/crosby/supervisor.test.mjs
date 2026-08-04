@@ -73,13 +73,29 @@ test("persists the supervisor identity and launches one visible worker without f
   assert.match(worker.agent, /^task-001-[a-f0-9]{8}$/);
   assert.equal(calls[0][0], "createTaskTab");
   assert.equal(calls[0][1].focus, false);
+  assert.equal(calls[0][1].label, "Task task-001");
   assert.equal(calls[1][0], "startPiAgent");
-  assert.deepEqual(calls[1][1].agentArgs, ["--approve"]);
+  assert.deepEqual(calls[1][1].agentArgs, [
+    "--approve",
+    "--model", "openai-codex/gpt-5.6-luna",
+    "--thinking", "medium",
+  ]);
   assert.deepEqual(calls.slice(2), [
-    ["promptAgent", { agent: worker.agent, prompt: "/model openai-codex/gpt-5.6-luna", wait: false }],
-    ["promptAgent", { agent: worker.agent, prompt: "/thinking medium", wait: false }],
     ["promptAgent", { agent: worker.agent, prompt: "Implement task-001", wait: false }],
   ]);
+});
+
+test("rebinds stale supervisor identity to the parent running resume", async () => {
+  const { store, client } = await fixture();
+  const supervisor = createHerdrSupervisor({ client, store });
+  await supervisor.ensureSupervisor({ workspace: "space-1", pane: "old-parent-pane", agent: "old-parent-agent" });
+
+  const rebound = await supervisor.ensureSupervisor({ workspace: "space-1", pane: "new-parent-pane", agent: "new-parent-agent" });
+
+  assert.equal(rebound.rebound, true);
+  assert.deepEqual((await readRegistry(store)).supervisor, {
+    workspace: "space-1", pane: "new-parent-pane", agent: "new-parent-agent",
+  });
 });
 
 test("scopes worker agent names to the build registry", async () => {

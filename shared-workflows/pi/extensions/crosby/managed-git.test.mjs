@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -118,6 +118,23 @@ test("verification none skips only focused verification and safe commit retains 
   const commit = await safeCommit({ cwd: task.path, message: "feat: task evidence" });
   assert.match(commit.sha, /^[0-9a-f]{40}$/);
   assert.equal((await git(operatorCheckout, "status", "--short")).stdout, "");
+});
+
+test("reconciles a task branch that was merged before registry persistence", async () => {
+  const { root, operatorCheckout } = await setupRepository();
+  const managed = await createManagedRepository({ root: path.join(root, "managed"), sourcePath: operatorCheckout });
+  const parent = await createParentWorktree({ managedRepository: managed, parentKey: "COA-360", parentBranch: "crosby/parent" });
+  const task = await createTaskWorktree({ managedRepository: managed, parentKey: "COA-360", childKey: "COA-363", taskBranch: "crosby/task", baseRef: parent.branch });
+  await writeFile(path.join(task.path, "in-scope.txt"), "task\n");
+  await safeCommit({ cwd: task.path, message: "feat: task" });
+
+  const first = await serializedMerge({ parentWorktreePath: parent.path, taskBranch: task.branch, message: "Merge task" });
+  const resumed = await serializedMerge({ parentWorktreePath: parent.path, taskBranch: task.branch, message: "Merge task" });
+
+  assert.equal(first.merged, true);
+  assert.deepEqual(resumed, { merged: false, alreadyMerged: true, sha: first.sha });
+  assert.equal((await git(parent.path, "status", "--short")).stdout, "");
+  await assert.rejects(() => readFile(path.join(parent.path, ".crosby-merge.lock")), /ENOENT/);
 });
 
 test("a merge conflict aborts parent integration and retains task evidence", async () => {
