@@ -3,6 +3,20 @@ import path from "node:path";
 
 const DEFAULT_DOCUMENTS_ROOT = "C:\\Users\\camer\\Documents";
 
+export function getIssueIdentifier(issueOrKey) {
+  if (typeof issueOrKey === "string") return issueOrKey;
+  return String(issueOrKey?.identifier ?? issueOrKey?.number ?? "").trim();
+}
+
+export function formatLifecycleStartedEvent(issueOrKey) {
+  return `${getIssueIdentifier(issueOrKey)} started`;
+}
+
+export function formatLifecycleFinishedEvent(issueOrKey, outcome) {
+  const identifier = getIssueIdentifier(issueOrKey);
+  return outcome === "fatal" ? `${identifier} fatal` : `${identifier} finished ${outcome}`;
+}
+
 export function parseSingleIssueKeyArg(args) {
   const tokens = String(args ?? "")
     .trim()
