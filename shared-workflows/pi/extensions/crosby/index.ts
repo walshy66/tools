@@ -933,11 +933,23 @@ export default function crosbyExtension(pi: ExtensionAPI) {
       let githubClient: any;
       let githubQueue: any;
       let dashboardController: any;
+      let watchMode = false;
       try {
         const githubCommand = parseGitHubCommand(args);
-        const githubIssue = githubCommand?.mode === "parent" ? githubCommand.issueRef : parseGitHubIssueInvocation(args);
+        watchMode = githubCommand?.mode === "watch";
+        let githubIssue = githubCommand?.mode === "parent" ? githubCommand.issueRef : parseGitHubIssueInvocation(args);
         const sourcePath = process.cwd();
         const identity = await resolveRepositoryIdentity(pi, sourcePath);
+        if (watchMode) {
+          githubClient = createGitHubClient({ repository: identity, exec: (name: string, ghArgs: string[]) => pi.exec(name, ghArgs, { cwd: sourcePath }) });
+          const queues = await githubClient.loadExecuteParentQueues();
+          githubQueue = queues.find((queue: any) => !queue.children.some((child: any) => child.state.name === "Building"));
+          if (!githubQueue) {
+            ctx.ui.notify("Crosby watch cycle is idle; no runnable GitHub parent was found.", "info");
+            return;
+          }
+          githubIssue = githubQueue.parent.identifier;
+        }
         if (githubCommand?.mode === "push" || githubCommand?.mode === "review") {
           githubClient = createGitHubClient({ repository: identity, exec: (name: string, ghArgs: string[]) => pi.exec(name, ghArgs, { cwd: sourcePath }) });
           githubQueue = await githubClient.loadParentQueue(githubCommand.issueRef);
