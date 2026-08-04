@@ -33,6 +33,19 @@ import { readRegistry } from "./registry.mjs";
 import { integrateTask } from "./integration.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { writeGitHubBuild } from "./github-build.mjs";
+import {
+  createCrosbyDashboard,
+  markDashboardExecutionStarted,
+  markDashboardExecutionFinished,
+  markDashboardExecutionFinalized,
+  markDashboardHerdrWorkerStarted,
+  markDashboardPaneOpened,
+  markDashboardFatalError,
+  reconcileDashboardFromQueue,
+  renderCrosbyCompactDashboard,
+  renderCrosbyDashboard,
+  persistDashboardEvent,
+} from "./dashboard.mjs";
 import { buildModelCandidates, selectTaskModel } from "./model-selector.mjs";
 
 function getLinearInvocation(args: string[]) {
@@ -855,6 +868,47 @@ function registerSupervisorTools(pi: ExtensionAPI) {
   }
 }
 
+function createDashboardController(ctx: any, queue: any, mode: string) {
+  let dashboard = createCrosbyDashboard(queue, { mode });
+  const render = () => {
+    try {
+      ctx.ui.setWidget("crosby-dashboard", renderCrosbyCompactDashboard(dashboard), { placement: "aboveEditor" });
+      ctx.ui.setWidget("crosby-dashboard-pane", renderCrosbyDashboard(dashboard), { placement: "aboveEditor" });
+    } catch {
+      // Dashboard rendering is best effort.
+    }
+    persistDashboardEvent(dashboard);
+  };
+  render();
+  return {
+    get dashboard() { return dashboard; },
+    paneOpened(event: any) { markDashboardPaneOpened(dashboard, event); render(); },
+    executionStarted(event: any) { markDashboardExecutionStarted(dashboard, event); render(); },
+    workerStarted(event: any) { markDashboardHerdrWorkerStarted(dashboard, event); render(); },
+    executionFinished(event: any) { markDashboardExecutionFinished(dashboard, event); render(); },
+    executionFinalized(event: any) { markDashboardExecutionFinalized(dashboard, event); render(); },
+    queueRefreshed(nextQueue: any) { reconcileDashboardFromQueue(dashboard, nextQueue); render(); },
+    fatal(error: unknown) { markDashboardFatalError(dashboard, error); render(); },
+  };
+}
+
+async function openDashboardPane(pi: ExtensionAPI, controller: any, sourcePath: string, herdrContext: any) {
+  if (!controller || controller.dashboard.dashboardPaneId || process.env.CROSBY_DASHBOARD_PANE === "0") return;
+  if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) return;
+  try {
+    const split = await pi.exec("herdr", ["pane", "split", process.env.HERDR_PANE_ID, "--direction", "down", "--no-focus", "--cwd", sourcePath]);
+    if (split.code !== 0) throw new Error(split.stderr || "dashboard pane split failed");
+    const payload = JSON.parse(split.stdout);
+    const paneId = payload?.result?.pane?.pane_id ?? payload?.result?.root_pane?.pane_id ?? payload?.result?.pane_id;
+    if (!paneId) throw new Error("Herdr did not return the dashboard pane id.");
+    const runner = path.join(path.dirname(new URL(import.meta.url).pathname), "dashboard-runner.mjs").replace(/^\/(C:)/, "$1");
+    await pi.exec("herdr", ["pane", "run", paneId, process.execPath, runner, "--run", controller.dashboard.runId]);
+    controller.paneOpened({ paneId });
+  } catch (error) {
+    controller.fatal(error);
+  }
+}
+
 function parseGitHubIssueInvocation(args: string) {
   const tokens = String(args ?? "").trim().split(/\s+/).filter(Boolean);
   if (tokens.length !== 1) return null;
@@ -876,6 +930,7 @@ export default function crosbyExtension(pi: ExtensionAPI) {
       let statusArgs: any;
       let githubClient: any;
       let githubQueue: any;
+      let dashboardController: any;
       try {
         const githubIssue = parseGitHubIssueInvocation(args);
         const sourcePath = process.cwd();
@@ -889,6 +944,11 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           command = parseBuildCommandArgs(args);
         }
         const herdrContext = requireCrosbyHerdrContext();
+        if (githubQueue) {
+          dashboardController = createDashboardController(ctx, githubQueue, "manual");
+          await openDashboardPane(pi, dashboardController, sourcePath, herdrContext);
+          if (githubQueue.children[0]) dashboardController.executionStarted({ child: githubQueue.children[0], parent: githubQueue.parent });
+        }
         const invokeHerdrCli = createHerdrCliInvoker({ exec: (commandName: string, commandArgs: string[]) => pi.exec(commandName, commandArgs) });
         const herdr = createHerdrClient({ invoke: invokeHerdrCli });
         const registryRoot = path.join(homedir(), ".pi", "crosby");
@@ -956,18 +1016,23 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             },
             waitForReport,
             integrateTask: (input: any) => integrateTask(input),
-            onTaskIntegrated: githubClient
-              ? async ({ task, report }: any) => {
-                  const issueNumber = task.id.replace(/^task-0*/, "");
-                  await githubClient.moveIssue(issueNumber, "Done");
-                  await githubClient.addComment(issueNumber, `Crosby completed this task. Commit: ${report.changes?.commit ?? "recorded in the durable worktree"}.`);
-                }
-              : undefined,
+            onTaskIntegrated: async ({ task, report }: any) => {
+              dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+              dashboardController?.executionFinalized({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+              if (githubClient) {
+                const issueNumber = task.id.replace(/^task-0*/, "");
+                await githubClient.moveIssue(issueNumber, "Done");
+                await githubClient.addComment(issueNumber, `Crosby completed this task. Commit: ${report.changes?.commit ?? "recorded in the durable worktree"}.`);
+              }
+            },
             onProgress: async (progress: any) => {
               pi.appendEntry("crosby-build-progress", progress);
               ctx.ui.notify(formatBuildProgress(progress), "info");
             },
-            emitLifecycle: (event: any) => pi.appendEntry("crosby-worker-lifecycle", event),
+            emitLifecycle: (event: any) => {
+              if (event.lifecycle === "working") dashboardController?.workerStarted(event);
+              pi.appendEntry("crosby-worker-lifecycle", event);
+            },
           },
         });
         if (githubClient && githubQueue) {
