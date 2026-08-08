@@ -178,7 +178,22 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
       continue;
     }
     if (task.executionMode === "HITL") {
-      throw new BuildRunnerError(`Build reached human gate ${task.id}; explicit operator participation is required and no worker was launched.`);
+      const reviewReport = {
+        outcome: "blocked",
+        summary: "This task requires human-in-the-loop execution.",
+        requiredHumanAction: task.outcome,
+        recoveryNotes: ["Complete the manual acceptance steps, then close the GitHub issue or approve it from the initiating Pi session."],
+        requestHerdrBlocked: true,
+      };
+      const reviewedRegistry = await updateRegistry(store, (registry) => ({
+        ...registry,
+        queueState: "ready",
+        currentTask: null,
+        workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], taskId: task.id, lifecycle: "review", report: reviewReport } },
+      }));
+      if (typeof adapters.onTaskReview === "function") await adapters.onTaskReview({ task, report: reviewReport, registry: reviewedRegistry });
+      if (typeof ops.onProgress === "function") await ops.onProgress(summarizeBuildProgress({ build, registry: reviewedRegistry }));
+      continue;
     }
     if (typeof adapters.onTaskStarting === "function") await adapters.onTaskStarting({ task, registry: current });
     const hasReportedCompletion = currentWorker?.lifecycle === "reported" && currentWorker.report?.outcome === "complete";
