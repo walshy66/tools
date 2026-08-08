@@ -655,6 +655,7 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           }
         };
         activeBuildContext = { root: registryRoot, registryRoot, repositoryIdentity: identity, parentKey: githubQueue?.parent?.branchName ?? command.buildFolder, buildId: githubQueue?.parent?.number ? `github-${githubQueue.parent.number}` : null, buildFolder: command.buildFolder, parentBranch: githubQueue?.parent?.branchName ?? null, spaceId: herdrContext.workspace };
+        let parentClaimed = false;
         const buildAdapters = {
           herdrClient: herdr,
           selectTaskModel: async ({ task }: any) => {
@@ -667,6 +668,10 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           integrateTask: (input: any) => integrateTask(input),
           onTaskStarting: async ({ task }: any) => {
             if (githubClient) {
+              if (!parentClaimed && githubQueue?.parent) {
+                await githubClient.moveIssue(githubQueue.parent.identifier, "Building");
+                parentClaimed = true;
+              }
               const issueNumber = task.id.replace(/^task-0*/, "");
               await githubClient.moveIssue(issueNumber, "Building");
               const active = activeDashboardController?.dashboard?.tasks?.find((entry: any) => entry.issueKey === `#${issueNumber}`);

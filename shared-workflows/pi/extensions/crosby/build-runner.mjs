@@ -88,6 +88,9 @@ function taskPrompt(build, task) {
     "If acceptance requires an out-of-scope path, submit a blocked report naming the missing path instead of changing it.",
     "Read the applicable AGENTS.md chain before editing and work only in the assigned worktree.",
     "Before reporting, compare the complete task diff with the declared file scope and run every declared verification command; do not report skipped required checks as complete.",
+    "Stage all completed work with git add and create at least one commit whose message references the task ID before reporting complete.",
+    "Verify git status --porcelain is empty before reporting complete and include the commit hash in the completion report.",
+    "If you cannot commit the work or leave the worktree clean, submit a blocked report requiring human review instead of reporting complete.",
     "When finished, submit exactly one explicit crosby_worker_report terminal report. Do not report completion from idle state.",
   ].join("\n");
 }
