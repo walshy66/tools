@@ -261,7 +261,27 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     }
     if (report.outcome !== "complete") throw new BuildRunnerError(`Worker ${task.id} reported ${report.outcome}; queue stopped.`);
     if (typeof adapters.integrateTask !== "function") throw new BuildRunnerError("A task integration adapter is required before advancing the build.");
-    await adapters.integrateTask({ task, taskWorktree, parentWorktree: parent, report });
+    let integration;
+    try {
+      integration = await adapters.integrateTask({ task, taskWorktree, parentWorktree: parent, report });
+    } catch (error) {
+      const reviewReport = {
+        outcome: "blocked",
+        summary: `Worker completed, but Crosby could not integrate the task: ${error instanceof Error ? error.message : String(error)}`,
+        requiredHumanAction: `Inspect the retained ${task.id} worktree, reconcile the declared file scope or changes, then approve the task for integration.`,
+        recoveryNotes: ["The worker commit and retained worktree were preserved; no parent merge was performed."],
+        requestHerdrBlocked: true,
+      };
+      const reviewedRegistry = await updateRegistry(store, (registry) => ({
+        ...registry,
+        queueState: "ready",
+        currentTask: null,
+        workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "review", report: reviewReport, integrationError: reviewReport.summary } },
+      }));
+      if (typeof adapters.onTaskReview === "function") await adapters.onTaskReview({ task, taskWorktree, parentWorktree: parent, report: reviewReport, registry: reviewedRegistry });
+      if (typeof ops.onProgress === "function") await ops.onProgress(summarizeBuildProgress({ build, registry: reviewedRegistry }));
+      continue;
+    }
     const updatedRegistry = await updateRegistry(store, (registry) => {
       const workers = { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "integrated", report } };
       return { ...registry, workers };

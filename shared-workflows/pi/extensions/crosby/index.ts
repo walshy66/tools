@@ -603,7 +603,8 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           dashboardController = createDashboardController(ctx, githubQueue, "manual");
           activeDashboardController = dashboardController;
           await openDashboardPane(pi, dashboardController, sourcePath, herdrContext);
-          if (githubQueue.children[0]) dashboardController.executionStarted({ child: githubQueue.children[0], parent: githubQueue.parent });
+          const firstActiveChild = githubQueue.children.find((child: any) => !["Done", "Review"].includes(child.state?.name));
+          if (firstActiveChild) dashboardController.executionStarted({ child: firstActiveChild, parent: githubQueue.parent });
         }
         const invokeHerdrCli = createHerdrCliInvoker({ exec: (commandName: string, commandArgs: string[]) => pi.exec(commandName, commandArgs) });
         const herdr = createHerdrClient({ invoke: invokeHerdrCli });
