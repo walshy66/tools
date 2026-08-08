@@ -24,7 +24,8 @@ Describe the user or implementation outcome.
 - Do not modify out-of-scope files.
 - Report a blocked outcome when the contract cannot be satisfied safely.
 
-## Optional Worker Hints
+## Worker Routing Labels
 
-- `model:<provider/model>` labels are advisory only.
-- `effort:<level>` labels are advisory only.
+- `model:<provider/model>` sets the worker model when it is available to Crosby.
+- `thinking:<off|minimal|low|medium|high|xhigh|max>` sets the Pi thinking level.
+- Missing or unavailable labels fall back safely to Crosby defaults.

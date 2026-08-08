@@ -22,7 +22,7 @@ Required labels are bootstrapped with `scripts/bootstrap-github-labels.sh`:
 - `mode:afk`, `mode:hitl`
 - `wt:development`, `wt:process-automation`
 
-Completed issues are closed. Automated child bodies must contain `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails`. `model:` and `effort:` labels are advisory hints only; the authenticated parent model selects the final worker model from its allowlisted candidates.
+Completed issues are closed. Automated child bodies must contain `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails`. `model:` and `thinking:` labels set worker launch settings when valid; unavailable labels fall back to the authenticated parent model's allowlisted defaults.
 
 ## Herdr layout
 

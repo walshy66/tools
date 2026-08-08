@@ -28,8 +28,8 @@ function validModelSelection(value) {
     && typeof value === "object"
     && typeof value.model === "string"
     && value.model.includes("/")
-    && value.thinking === "medium"
-    && value.source === "orchestrator";
+    && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value.thinking)
+    && ["orchestrator", "issue-label"].includes(value.source);
 }
 
 function validTaskWorktree(value) {
