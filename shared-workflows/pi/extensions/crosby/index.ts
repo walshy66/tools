@@ -33,6 +33,7 @@ let activeDashboardController: any = null;
 let activeGitHubClient: any = null;
 let activeGitHubQueue: any = null;
 let activeBuildContext: any = null;
+let activeGitHubMonitorStop: (() => void) | null = null;
 import {
   createCrosbyDashboard,
   markDashboardExecutionStarted,
@@ -431,6 +432,44 @@ function createDashboardController(ctx: any, queue: any, mode: string) {
   };
 }
 
+function startGitHubQueueMonitor({ client, queue, dashboardController, buildFolder, buildRoot, runBuild }: any) {
+  if (activeGitHubMonitorStop) activeGitHubMonitorStop();
+  let stopped = false;
+  let running = false;
+  let currentQueue = queue;
+  const poll = async () => {
+    if (stopped || running) return;
+    try {
+      const refreshed = await client.loadParentQueue(currentQueue.parent.identifier);
+      currentQueue = refreshed;
+      activeGitHubQueue = refreshed;
+      dashboardController?.queueRefreshed(refreshed);
+      if (refreshed.children.every((child: any) => child.state.name === "Done")) {
+        stop();
+        return;
+      }
+      const runnable = refreshed.children.some((child: any) => ["Ready", "Ready to Build", "Execute"].includes(child.state.name));
+      if (!runnable) return;
+      running = true;
+      const folder = await writeGitHubBuild(refreshed, buildRoot);
+      await runBuild(folder);
+    } catch (error) {
+      dashboardController?.fatal(error);
+    } finally {
+      running = false;
+    }
+  };
+  const timer = setInterval(poll, 3000);
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    if (activeGitHubMonitorStop === stop) activeGitHubMonitorStop = null;
+  };
+  activeGitHubMonitorStop = stop;
+  return stop;
+}
+
 async function openDashboardPane(pi: ExtensionAPI, controller: any, sourcePath: string, herdrContext: any) {
   if (!controller || controller.dashboard.dashboardPaneId || process.env.CROSBY_DASHBOARD_PANE === "0") return;
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) return;
@@ -657,7 +696,18 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           },
         };
         const runDurableBuild = (buildFolder: string) => runBuild({ buildFolder, sourcePath, workspace: herdrContext.workspace, pane: herdrContext.pane, agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor", registryRoot, repositoryIdentity: identity, adapters: buildAdapters });
-        let result = await runDurableBuild(command.buildFolder);
+        let result;
+        try {
+          result = await runDurableBuild(command.buildFolder);
+        } catch (error) {
+          if (githubClient && githubQueue && !watchMode) {
+            startGitHubQueueMonitor({ client: githubClient, queue: githubQueue, dashboardController, buildFolder: command.buildFolder, buildRoot: path.join(homedir(), ".pi", "crosby", "github-builds"), runBuild: runDurableBuild });
+          }
+          throw error;
+        }
+        if (githubClient && githubQueue && !watchMode) {
+          startGitHubQueueMonitor({ client: githubClient, queue: githubQueue, dashboardController, buildFolder: command.buildFolder, buildRoot: path.join(homedir(), ".pi", "crosby", "github-builds"), runBuild: runDurableBuild });
+        }
         if (watchMode) {
           while (true) {
             await new Promise((resolve) => setTimeout(resolve, 60000));
