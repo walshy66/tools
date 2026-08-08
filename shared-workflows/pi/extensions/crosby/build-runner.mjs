@@ -142,6 +142,7 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     parentBranch: build.parentBranch,
     baseRef: managed.sourceHead ?? undefined,
   });
+  await updateRegistry(store, (registry) => ({ ...registry, parentWorktree: parent }));
   const supervisor = ops.createHerdrSupervisor({ client: adapters.herdrClient, store, emitLifecycle: adapters.emitLifecycle });
   if (!supervisor || typeof supervisor.ensureSupervisor !== "function") throw new BuildRunnerError("A Herdr supervisor adapter is required.");
   await supervisor.ensureSupervisor({ workspace, pane, agent });

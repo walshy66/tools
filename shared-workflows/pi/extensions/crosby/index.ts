@@ -20,7 +20,7 @@ import { createHerdrCliInvoker } from "./herdr-cli.mjs";
 import { requireCrosbyHerdrContext } from "./herdr-context.mjs";
 import { persistWorkerReport } from "./worker-report.mjs";
 import { formatBuildProgress, parseBuildCommandArgs, readBuildStatus, runBuild } from "./build-runner.mjs";
-import { readRegistry } from "./registry.mjs";
+import { createRegistryStore, readRegistry, updateRegistry } from "./registry.mjs";
 import { integrateTask } from "./integration.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { writeGitHubBuild } from "./github-build.mjs";
@@ -30,6 +30,7 @@ import { parseGitHubCommand, runGitHubWatch } from "./github-actions.mjs";
 let activeDashboardController: any = null;
 let activeGitHubClient: any = null;
 let activeGitHubQueue: any = null;
+let activeBuildContext: any = null;
 import {
   createCrosbyDashboard,
   markDashboardExecutionStarted,
@@ -451,6 +452,17 @@ function registerReviewCompletionTool(pi: ExtensionAPI) {
       if (!activeGitHubClient || !activeGitHubQueue || !activeDashboardController) throw new Error("No active GitHub Crosby review is available.");
       const reviewTask = activeDashboardController.dashboard.tasks.find((task: any) => task.status === "review");
       if (!reviewTask?.issueKey) throw new Error("No Crosby task is currently awaiting human review.");
+      const taskId = `task-${String(reviewTask.issueKey).replace(/\D/g, "").padStart(3, "0")}`;
+      if (activeBuildContext) {
+        const store = createRegistryStore(activeBuildContext);
+        const registry = await readRegistry(store);
+        const worker = registry.workers?.[taskId];
+        const task = registry.tasks?.[taskId];
+        if (worker?.taskWorktree && registry.parentWorktree && task) {
+          const integration = await integrateTask({ task, taskWorktree: worker.taskWorktree, parentWorktree: registry.parentWorktree, report: worker.report });
+          await updateRegistry(store, (current) => ({ ...current, workers: { ...current.workers, [taskId]: { ...current.workers[taskId], lifecycle: "integrated", report: { ...current.workers[taskId].report, outcome: "complete", taskOutcome: "Human review completed", changes: { paths: integration.changedPaths, commit: integration.commit }, verification: integration.verification, risks: [] } } } }));
+        }
+      }
       await activeGitHubClient.moveIssue(reviewTask.issueKey, "Done");
       await activeGitHubClient.addComment(reviewTask.issueKey, "Human review completed; task approved and marked complete by the operator.");
       const refreshed = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
@@ -589,6 +601,7 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         };
+        activeBuildContext = { root: registryRoot, registryRoot, repositoryIdentity: identity, parentKey: githubQueue?.parent?.branchName ?? command.buildFolder, buildId: githubQueue?.parent?.number ? `github-${githubQueue.parent.number}` : null, buildFolder: command.buildFolder, parentBranch: githubQueue?.parent?.branchName ?? null, spaceId: herdrContext.workspace };
         const buildAdapters = {
           herdrClient: herdr,
           selectTaskModel: async ({ task }: any) => {

@@ -108,7 +108,7 @@ export function renderDashboardFromEventsPath(eventsPath) {
 function printDashboard(eventsPath, options = {}) {
   const write = options.write ?? ((text) => process.stdout.write(text));
   const lines = renderDashboardFromEventsPath(eventsPath);
-  write(`${lines.join("\n")}\n`);
+  write(`\u001b[2J\u001b[H${lines.join("\n")}\n`);
 }
 
 /**
