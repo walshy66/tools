@@ -679,18 +679,18 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             }
           },
           onTaskIntegrated: async ({ task, report }: any) => {
-            dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
-            dashboardController?.executionFinalized({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+            const issueNumber = task.id.replace(/^task-0*/, "");
+            dashboardController?.executionFinished({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+            dashboardController?.executionFinalized({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
             if (githubClient) {
-              const issueNumber = task.id.replace(/^task-0*/, "");
               await githubClient.moveIssue(issueNumber, "Done");
               await githubClient.addComment(issueNumber, buildGitHubChildProgress({ child: { identifier: `#${issueNumber}` }, outcome: report.outcome, summary: report.summary, changes: report.changes?.paths ?? [report.changes?.commit ?? "recorded in the durable worktree"], verification: report.verification?.map((entry: any) => `${entry.command}: ${entry.result}`), recoveryNotes: report.risks }));
             }
           },
           onTaskReview: async ({ task, report }: any) => {
-            dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: "review", requiredHumanAction: report.requiredHumanAction, recoveryNotes: report.recoveryNotes } });
+            const issueNumber = task.id.replace(/^task-0*/, "");
+            dashboardController?.executionFinished({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: "review", requiredHumanAction: report.requiredHumanAction, recoveryNotes: report.recoveryNotes } });
             if (githubClient) {
-              const issueNumber = task.id.replace(/^task-0*/, "");
               await githubClient.moveIssue(issueNumber, "Review");
               await githubClient.addComment(issueNumber, buildGitHubChildProgress({ child: { identifier: `#${issueNumber}` }, outcome: "review", summary: report.summary, recoveryNotes: [report.requiredHumanAction, ...(report.recoveryNotes ?? [])] }));
             }
@@ -700,7 +700,10 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             ctx.ui.notify(formatBuildProgress(progress), "info");
           },
           emitLifecycle: (event: any) => {
-            if (event.lifecycle === "working") dashboardController?.workerStarted(event);
+            if (event.lifecycle === "working") {
+              const issueNumber = String(event.taskId ?? "").replace(/^task-0*/, "");
+              dashboardController?.workerStarted({ ...event, taskId: issueNumber ? `#${issueNumber}` : event.taskId });
+            }
             pi.appendEntry("crosby-worker-lifecycle", event);
           },
         };
