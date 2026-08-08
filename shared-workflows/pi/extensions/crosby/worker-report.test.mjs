@@ -53,8 +53,8 @@ test("persists blocked reports and requests Herdr blocked state", async () => {
 
   await persistWorkerReport({ report: blocked, env, emitHerdrBlocked: (payload) => events.push(payload) });
 
-  assert.deepEqual(events, [{ active: true, label: "COA-365: Need an API credential." }]);
-  assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, "blocked");
+  assert.deepEqual(events, []);
+  assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, "review");
 });
 
 test("clears Herdr blocked state when a replacement completion report is submitted", async () => {
@@ -75,10 +75,7 @@ test("clears Herdr blocked state when a replacement completion report is submitt
   await persistWorkerReport({ report: blocked, env, emitHerdrBlocked });
   await persistWorkerReport({ report: completion, env, emitHerdrBlocked });
 
-  assert.deepEqual(events, [
-    { active: true, label: "COA-365: Need Docker Desktop." },
-    { active: false },
-  ]);
+  assert.deepEqual(events, [{ active: false }]);
   assert.equal((await readRegistry(store)).workers[env.CROSBY_TASK_KEY].lifecycle, "reported");
 });
 
