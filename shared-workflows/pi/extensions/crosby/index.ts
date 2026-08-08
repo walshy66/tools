@@ -439,10 +439,14 @@ function startGitHubQueueMonitor({ client, queue, dashboardController, buildFold
   let running = false;
   let currentQueue = queue;
   let lastAttemptSignature = "";
+  const baseDelayMs = Math.max(10_000, Number(process.env.CROSBY_GITHUB_POLL_MS ?? 30_000));
+  let delayMs = baseDelayMs;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const poll = async () => {
     if (stopped || running) return;
     try {
       const refreshed = await client.loadParentQueue(currentQueue.parent.identifier);
+      delayMs = baseDelayMs;
       currentQueue = refreshed;
       activeGitHubQueue = refreshed;
       dashboardController?.queueRefreshed(refreshed);
@@ -459,18 +463,27 @@ function startGitHubQueueMonitor({ client, queue, dashboardController, buildFold
       const folder = await writeGitHubBuild(refreshed, buildRoot);
       await runBuild(folder);
     } catch (error) {
-      dashboardController?.fatal(error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (/rate limit|api rate limit|secondary rate limit/i.test(message)) {
+        delayMs = Math.min(Math.max(baseDelayMs * 10, 300_000), delayMs * 2);
+      } else {
+        dashboardController?.fatal(error);
+        delayMs = baseDelayMs;
+      }
     } finally {
       running = false;
     }
   };
-  const timer = setInterval(poll, 3000);
+  const schedule = () => {
+    if (!stopped) timer = setTimeout(async () => { await poll(); schedule(); }, delayMs);
+  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
     if (activeGitHubMonitorStop === stop) activeGitHubMonitorStop = null;
   };
+  schedule();
   activeGitHubMonitorStop = stop;
   return stop;
 }
