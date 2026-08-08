@@ -32,7 +32,7 @@ Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that 
 
 - Read the plan, spec, or PRD.
 - Identify the user stories and the minimum viable outcome.
-- Resolve the originating GitHub parent issue from the current feature context.
+- Resolve the originating GitHub parent issue from the current feature context. This may be the parent issue number or URL returned by `to-prd` after its approved PRD was published.
 - Load the parent issue metadata needed for child creation:
   - parent issue number or URL
   - parent title/body
@@ -194,7 +194,7 @@ After approval and creation, also report:
 - Update `plan.md` and/or `tasks.md` before creating GitHub issues.
 
 **Parent GitHub issue cannot be resolved**
-- Stop and ask the user to provide or confirm the parent issue number or URL.
+- Stop and ask the user to provide or confirm the parent issue number or URL. If the PRD has not yet been published, run `to-prd` first and approve its GitHub parent creation.
 
 **User has not explicitly approved the issue set**
 - Do not create any GitHub issues.

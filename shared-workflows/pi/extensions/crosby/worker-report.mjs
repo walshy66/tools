@@ -28,7 +28,7 @@ export async function persistWorkerReport({ report, env = process.env, emitHerdr
   const wasBlocked = existingRegistry.workers[taskKey].report?.outcome === "blocked";
 
   const registry = await updateRegistry(store, (current) => {
-    const lifecycle = validated.outcome === "complete" ? "reported" : validated.outcome;
+    const lifecycle = validated.outcome === "complete" ? "reported" : validated.outcome === "blocked" ? "review" : validated.outcome;
     const worker = current.workers[taskKey];
     const next = {
       ...current,
@@ -38,18 +38,14 @@ export async function persistWorkerReport({ report, env = process.env, emitHerdr
       },
     };
     if (current.currentTask === taskKey) {
-      return transitionQueue(next, validated.outcome === "complete" ? "complete" : validated.outcome, { taskId: taskKey });
+      return transitionQueue(next, validated.outcome === "complete" ? "complete" : validated.outcome === "blocked" ? "review" : validated.outcome, { taskId: taskKey });
     }
     return next;
   });
   const saved = registry.workers[taskKey];
 
-  if (typeof emitHerdrBlocked === "function") {
-    if (validated.outcome === "blocked" && !wasBlocked) {
-      emitHerdrBlocked({ active: true, label: `${taskKey}: ${validated.summary}` });
-    } else if (validated.outcome !== "blocked" && wasBlocked) {
-      emitHerdrBlocked({ active: false });
-    }
+  if (typeof emitHerdrBlocked === "function" && validated.outcome !== "blocked" && wasBlocked) {
+    emitHerdrBlocked({ active: false });
   }
   return saved;
 }

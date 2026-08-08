@@ -43,7 +43,7 @@ function taskState(task, worker) {
   if (worker?.lifecycle === "reported") return "awaiting integration";
   if (["working", "recovered"].includes(worker?.lifecycle)) return "running";
   if (worker?.lifecycle === "paused") return "paused";
-  if (["blocked", "failed", "cancelled", "review-required", "launch-failed"].includes(worker?.lifecycle)) return worker.lifecycle;
+  if (["blocked", "review", "failed", "cancelled", "review-required", "launch-failed"].includes(worker?.lifecycle)) return worker.lifecycle;
   return task.executionMode === "HITL" ? "human gate" : "pending";
 }
 
@@ -142,6 +142,7 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     parentBranch: build.parentBranch,
     baseRef: managed.sourceHead ?? undefined,
   });
+  await updateRegistry(store, (registry) => ({ ...registry, parentWorktree: parent }));
   const supervisor = ops.createHerdrSupervisor({ client: adapters.herdrClient, store, emitLifecycle: adapters.emitLifecycle });
   if (!supervisor || typeof supervisor.ensureSupervisor !== "function") throw new BuildRunnerError("A Herdr supervisor adapter is required.");
   await supervisor.ensureSupervisor({ workspace, pane, agent });
@@ -172,6 +173,7 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     if (task.executionMode === "HITL") {
       throw new BuildRunnerError(`Build reached human gate ${task.id}; explicit operator participation is required and no worker was launched.`);
     }
+    if (typeof adapters.onTaskStarting === "function") await adapters.onTaskStarting({ task, registry: current });
     const hasReportedCompletion = currentWorker?.lifecycle === "reported" && currentWorker.report?.outcome === "complete";
     if (hasReportedCompletion && !validTaskWorktree(currentWorker.taskWorktree)) {
       throw new BuildRunnerError(`Worker ${task.id} reported completion without a persisted task worktree identity.`);
@@ -239,6 +241,17 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
         ? await adapters.waitForReport({ task, worker, store })
         : null;
     if (!report) throw new BuildRunnerError(`Worker ${task.id} has not submitted a terminal report; queue remains stopped.`);
+    if (report.outcome === "blocked") {
+      const reviewedRegistry = await updateRegistry(store, (registry) => ({
+        ...registry,
+        queueState: "ready",
+        currentTask: null,
+        workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "review", report } },
+      }));
+      if (typeof adapters.onTaskReview === "function") await adapters.onTaskReview({ task, report, registry: reviewedRegistry });
+      if (typeof ops.onProgress === "function") await ops.onProgress(summarizeBuildProgress({ build, registry: reviewedRegistry }));
+      continue;
+    }
     if (report.outcome !== "complete") throw new BuildRunnerError(`Worker ${task.id} reported ${report.outcome}; queue stopped.`);
     if (typeof adapters.integrateTask !== "function") throw new BuildRunnerError("A task integration adapter is required before advancing the build.");
     await adapters.integrateTask({ task, taskWorktree, parentWorktree: parent, report });

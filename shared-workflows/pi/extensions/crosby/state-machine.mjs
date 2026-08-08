@@ -1,8 +1,9 @@
 const TRANSITIONS = {
   ready: { start: "working" },
-  working: { pause: "paused", complete: "ready", blocked: "blocked", failed: "failed", cancelled: "cancelled" },
+  working: { pause: "paused", complete: "ready", review: "ready", blocked: "blocked", failed: "failed", cancelled: "cancelled" },
   paused: { resume: "working", cancelled: "cancelled" },
   blocked: {},
+  review: {},
   failed: {},
   cancelled: {},
 };
@@ -19,7 +20,7 @@ export function transitionQueue(state, event, { taskId = null } = {}) {
   const current = state.queueState;
   const next = TRANSITIONS[current]?.[event];
   if (!next) throw new StateTransitionError(`Cannot apply '${event}' while queue is '${current}'.`);
-  if (["complete", "blocked", "failed", "cancelled"].includes(event) && state.currentTask !== taskId) {
+  if (["complete", "review", "blocked", "failed", "cancelled"].includes(event) && state.currentTask !== taskId) {
     throw new StateTransitionError(`Task '${taskId}' cannot report '${event}' for current task '${state.currentTask}'.`);
   }
   if (event === "start" && !taskId) throw new StateTransitionError("Starting the queue requires a task ID.");
@@ -27,7 +28,7 @@ export function transitionQueue(state, event, { taskId = null } = {}) {
   return {
     ...state,
     queueState: next,
-    currentTask: event === "start" ? taskId : event === "complete" ? null : state.currentTask,
+    currentTask: ["start"].includes(event) ? taskId : ["complete", "review"].includes(event) ? null : state.currentTask,
   };
 }
 
