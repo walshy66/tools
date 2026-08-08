@@ -25,7 +25,7 @@ ensure_label() {
   local color="$2"
   local description="$3"
 
-  if gh label view "$name" --repo "$repo" >/dev/null 2>&1; then
+  if gh label list --repo "$repo" --search "$name" --limit 100 --json name --jq '.[].name' | grep -Fxq "$name"; then
     gh label edit "$name" --repo "$repo" --color "$color" --description "$description" >/dev/null
     echo "updated label: $name"
   else

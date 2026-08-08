@@ -26,6 +26,7 @@ import { createGitHubClient } from "./github-client.mjs";
 import { writeGitHubBuild } from "./github-build.mjs";
 import { buildGitHubChildProgress, buildGitHubParentSummary } from "./github-reporting.mjs";
 import { parseGitHubCommand, runGitHubWatch } from "./github-actions.mjs";
+import { buildDashboardPaneCommand, dashboardPaneSplitArguments } from "./dashboard-launch.mjs";
 
 let activeDashboardController: any = null;
 let activeGitHubClient: any = null;
@@ -433,13 +434,15 @@ async function openDashboardPane(pi: ExtensionAPI, controller: any, sourcePath: 
   if (!controller || controller.dashboard.dashboardPaneId || process.env.CROSBY_DASHBOARD_PANE === "0") return;
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) return;
   try {
-    const split = await pi.exec("herdr", ["pane", "split", process.env.HERDR_PANE_ID, "--direction", "down", "--no-focus", "--cwd", sourcePath]);
+    const split = await pi.exec("herdr", dashboardPaneSplitArguments({ paneId: process.env.HERDR_PANE_ID, sourcePath }));
     if (split.code !== 0) throw new Error(split.stderr || "dashboard pane split failed");
     const payload = JSON.parse(split.stdout);
     const paneId = payload?.result?.pane?.pane_id ?? payload?.result?.root_pane?.pane_id ?? payload?.result?.pane_id;
     if (!paneId) throw new Error("Herdr did not return the dashboard pane id.");
     const runner = path.join(path.dirname(new URL(import.meta.url).pathname), "dashboard-runner.mjs").replace(/^\/(C:)/, "$1");
-    await pi.exec("herdr", ["pane", "run", paneId, process.execPath, runner, "--run", controller.dashboard.runId]);
+    const command = buildDashboardPaneCommand({ nodePath: process.execPath, runnerPath: runner, runId: controller.dashboard.runId });
+    const launch = await pi.exec("herdr", ["pane", "run", paneId, command]);
+    if (launch.code !== 0) throw new Error(launch.stderr || "dashboard pane launch failed");
     controller.paneOpened({ paneId });
   } catch (error) {
     controller.fatal(error);

@@ -26,7 +26,7 @@ Completed issues are closed. Automated child bodies must contain `Outcome`, `Acc
 
 ## Herdr layout
 
-The control tab remains interactive. Inside Herdr, it is split top-to-bottom with the live dashboard below it. Each child worker opens in a separate tab labeled `Task #<issue-number>` without stealing focus.
+The control tab remains interactive. Inside Herdr, it is split side-by-side with the live dashboard to the right of the trigger pane. Each child worker opens in a separate tab labeled `Task #<issue-number>` without stealing focus.
 
 ## Safety and recovery
 
