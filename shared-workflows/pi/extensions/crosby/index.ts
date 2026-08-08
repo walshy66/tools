@@ -34,6 +34,7 @@ let activeGitHubClient: any = null;
 let activeGitHubQueue: any = null;
 let activeBuildContext: any = null;
 let activeGitHubMonitorStop: (() => void) | null = null;
+let activeGitHubResume: (() => Promise<unknown>) | null = null;
 import {
   createCrosbyDashboard,
   markDashboardExecutionStarted,
@@ -502,10 +503,15 @@ function registerReviewCompletionTool(pi: ExtensionAPI) {
     promptGuidelines: ["Use this tool when the operator says the active Crosby review is done, complete, reviewed, approved, or otherwise finished."],
     parameters: Type.Object({}),
     async execute() {
-      if (!activeGitHubClient || !activeGitHubQueue || !activeDashboardController) throw new Error("No active GitHub Crosby review is available.");
-      const reviewTask = activeDashboardController.dashboard.tasks.find((task: any) => task.status === "review");
-      if (!reviewTask?.issueKey) throw new Error("No Crosby task is currently awaiting human review.");
-      const taskId = `task-${String(reviewTask.issueKey).replace(/\D/g, "").padStart(3, "0")}`;
+      if (!activeGitHubClient || !activeGitHubQueue || !activeDashboardController) throw new Error("No active GitHub Crosby review is available in the initiating Pi session.");
+      const refreshed = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
+      activeGitHubQueue = refreshed;
+      activeDashboardController.queueRefreshed(refreshed);
+      const reviewTask = activeDashboardController.dashboard.tasks.find((task: any) => task.status === "review")
+        ?? refreshed.children.find((child: any) => child.state.name === "Review");
+      const reviewIssueKey = reviewTask?.issueKey ?? refreshed.children.find((child: any) => child.state.name === "Review")?.identifier;
+      if (!reviewIssueKey) throw new Error("No Crosby task is currently awaiting human review.");
+      const taskId = `task-${String(reviewIssueKey).replace(/\D/g, "").padStart(3, "0")}`;
       if (activeBuildContext) {
         const store = createRegistryStore(activeBuildContext);
         const registry = await readRegistry(store);
@@ -516,13 +522,17 @@ function registerReviewCompletionTool(pi: ExtensionAPI) {
           await updateRegistry(store, (current) => ({ ...current, workers: { ...current.workers, [taskId]: { ...current.workers[taskId], lifecycle: "integrated", report: { ...current.workers[taskId].report, outcome: "complete", taskOutcome: "Human review completed", changes: { paths: integration.changedPaths, commit: integration.commit }, verification: integration.verification, risks: [] } } } }));
         }
       }
-      await activeGitHubClient.moveIssue(reviewTask.issueKey, "Done");
-      await activeGitHubClient.addComment(reviewTask.issueKey, "Human review completed; task approved and marked complete by the operator.");
-      const refreshed = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
-      activeGitHubQueue = refreshed;
-      activeDashboardController.queueRefreshed(refreshed);
-      activeDashboardController.executionFinalized({ child: { identifier: reviewTask.issueKey }, workerResult: { outcome: "done", summary: "Human review completed." } });
-      return { content: [{ type: "text", text: `Crosby review completed for ${reviewTask.issueKey}; GitHub and the dashboard were updated.` }] };
+      const currentChild = refreshed.children.find((child: any) => child.identifier === reviewIssueKey || child.number === String(reviewIssueKey).replace(/\D/g, ""));
+      if (currentChild?.state.name !== "Done") {
+        await activeGitHubClient.moveIssue(reviewIssueKey, "Done");
+        await activeGitHubClient.addComment(reviewIssueKey, "Human review completed; task approved and marked complete by the operator.");
+      }
+      const completedQueue = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
+      activeGitHubQueue = completedQueue;
+      activeDashboardController.queueRefreshed(completedQueue);
+      activeDashboardController.executionFinalized({ child: { identifier: reviewIssueKey }, workerResult: { outcome: "done", summary: "Human review completed." } });
+      if (activeGitHubResume) await activeGitHubResume();
+      return { content: [{ type: "text", text: `Crosby review completed for ${reviewIssueKey}; GitHub, the dashboard, and the queue were updated.` }] };
     },
   });
 }
@@ -708,7 +718,24 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             pi.appendEntry("crosby-worker-lifecycle", event);
           },
         };
-        const runDurableBuild = (buildFolder: string) => runBuild({ buildFolder, sourcePath, workspace: herdrContext.workspace, pane: herdrContext.pane, agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor", registryRoot, repositoryIdentity: identity, adapters: buildAdapters });
+        let durableBuildRunning = false;
+        const runDurableBuild = async (buildFolder: string) => {
+          if (durableBuildRunning) return null;
+          durableBuildRunning = true;
+          try {
+            return await runBuild({ buildFolder, sourcePath, workspace: herdrContext.workspace, pane: herdrContext.pane, agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor", registryRoot, repositoryIdentity: identity, adapters: buildAdapters });
+          } finally {
+            durableBuildRunning = false;
+          }
+        };
+        if (githubClient && githubQueue) {
+          activeGitHubResume = async () => {
+            const refreshed = await githubClient.loadParentQueue(githubQueue.parent.identifier);
+            githubQueue = refreshed;
+            const folder = await writeGitHubBuild(refreshed, path.join(homedir(), ".pi", "crosby", "github-builds"));
+            return runDurableBuild(folder);
+          };
+        }
         let result;
         try {
           result = await runDurableBuild(command.buildFolder);
