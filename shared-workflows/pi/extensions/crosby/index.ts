@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildRalphLoopPrompt,
   fetchParentQueue,
@@ -439,7 +440,7 @@ async function openDashboardPane(pi: ExtensionAPI, controller: any, sourcePath: 
     const payload = JSON.parse(split.stdout);
     const paneId = payload?.result?.pane?.pane_id ?? payload?.result?.root_pane?.pane_id ?? payload?.result?.pane_id;
     if (!paneId) throw new Error("Herdr did not return the dashboard pane id.");
-    const runner = path.join(path.dirname(new URL(import.meta.url).pathname), "dashboard-runner.mjs").replace(/^\/(C:)/, "$1");
+    const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "dashboard-runner.mjs");
     const command = buildDashboardPaneCommand({ nodePath: process.execPath, runnerPath: runner, runId: controller.dashboard.runId });
     const launch = await pi.exec("herdr", ["pane", "run", paneId, command]);
     if (launch.code !== 0) throw new Error(launch.stderr || "dashboard pane launch failed");

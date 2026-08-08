@@ -29,5 +29,5 @@ test("uses GitHub label transitions and issue comments", async () => {
   await client.moveIssue("17", "Building");
   await client.addComment("14", "progress");
   assert.deepEqual(calls[0].slice(0, 5), ["issue", "edit", "17", "--add-label", "status:building"]);
-  assert.deepEqual(calls[1], ["issue", "comment", "add", "14", "--body", "progress"]);
+  assert.deepEqual(calls[1], ["issue", "comment", "14", "--body", "progress"]);
 });

@@ -63,7 +63,7 @@ export function createGitHubClient({ exec, repository } = {}) {
   }
 
   async function addComment(issueRef, body) {
-    await run(["issue", "comment", "add", normalizeIssueRef(issueRef), "--body", String(body)]);
+    await run(["issue", "comment", normalizeIssueRef(issueRef), "--body", String(body)]);
   }
 
   return { loadIssue, loadParentQueue, loadExecuteParentQueues, moveIssue, addComment, repository: expectedRepository };
