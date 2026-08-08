@@ -371,6 +371,25 @@ const workerStoppedReportSchema = Type.Object({
   recoveryNotes: Type.Array(Type.String()),
 });
 
+function formatWorkerSessionSummary(taskKey: string, report: any) {
+  const lines = [`Crosby session summary — ${taskKey}`, `Outcome: ${report.outcome}`];
+  if (report.taskOutcome) lines.push(`Task result: ${report.taskOutcome}`);
+  if (report.summary) lines.push(`Summary: ${report.summary}`);
+  if (report.changes?.paths?.length) lines.push(`Changed files: ${report.changes.paths.join(", ")}`);
+  if (report.changes?.commit) lines.push(`Commit: ${report.changes.commit}`);
+  if (report.verification?.length) {
+    lines.push("Verification:");
+    for (const check of report.verification) lines.push(`- ${check.command}: ${check.result}`);
+  }
+  if (report.risks?.length) lines.push(`Risks/notes: ${report.risks.join("; ")}`);
+  if (report.requiredHumanAction) lines.push(`Human action required: ${report.requiredHumanAction}`);
+  if (report.recoveryNotes?.length) lines.push(`Recovery/testing notes: ${report.recoveryNotes.join("; ")}`);
+  lines.push(report.outcome === "complete"
+    ? "Test guidance: run the verification commands listed above and exercise the acceptance criteria for this task."
+    : "Next step: follow the human action and recovery/testing notes above before marking this task complete.");
+  return lines.join("\n");
+}
+
 function registerWorkerReportTool(pi: ExtensionAPI) {
   const workerEnvironmentReady = ["CROSBY_REGISTRY_ROOT", "CROSBY_REPOSITORY_ID", "CROSBY_PARENT_KEY", "CROSBY_TASK_KEY"].every((name) => process.env[name]?.trim());
   if (!workerEnvironmentReady) return;
@@ -391,9 +410,10 @@ function registerWorkerReportTool(pi: ExtensionAPI) {
         report: params,
         emitHerdrBlocked: typeof emit === "function" ? (payload: any) => emit.call((pi as any).events, "herdr:blocked", payload) : undefined,
       });
+      const taskKey = saved.registry?.taskKey ?? process.env.CROSBY_TASK_KEY;
       return {
-        content: [{ type: "text", text: `Crosby worker report recorded for ${saved.registry?.taskKey ?? process.env.CROSBY_TASK_KEY}.` }],
-        details: { outcome: params.outcome, reportedAt: saved.reportedAt },
+        content: [{ type: "text", text: `${formatWorkerSessionSummary(taskKey, params)}\n\nCrosby worker report recorded for ${taskKey}.` }],
+        details: { outcome: params.outcome, reportedAt: saved.reportedAt, sessionSummary: formatWorkerSessionSummary(taskKey, params) },
         terminate: true,
       };
     },
