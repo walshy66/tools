@@ -147,8 +147,8 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   assert.deepEqual(progressUpdates.map((progress) => [progress.completed, progress.remaining]), [[1, 1], [2, 0]]);
   const firstWorker = finalRegistry.workers["task-001"];
   assert.deepEqual(firstWorker.taskWorktree, {
-    path: "/work/task-001",
-    branch: "crosby/001-example-task-001",
+    path: "/work/task-001-source-head",
+    branch: "crosby/001-example-task-001-source-head",
     baseSha: "base",
   });
   assert.deepEqual(firstWorker.modelSelection, {

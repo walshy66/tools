@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseBuildTaskList } from "./task-list.mjs";
 import { createRegistryStore, readRegistry, updateRegistry } from "./registry.mjs";
-import { createManagedRepository, createParentWorktree, createTaskWorktree } from "./managed-git.mjs";
+import { createManagedRepository, createParentWorktree, createTaskWorktree, readWorktreeHead, removeTaskWorktree } from "./managed-git.mjs";
 import { createHerdrSupervisor } from "./supervisor.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
 
@@ -126,6 +126,8 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     createManagedRepository,
     createParentWorktree,
     createTaskWorktree,
+    readWorktreeHead,
+    removeTaskWorktree,
     createHerdrSupervisor,
     ...adapters,
   };
@@ -217,14 +219,22 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
         },
       }));
     }
-    let taskWorktree = currentWorker?.taskWorktree;
-    if (!validTaskWorktree(taskWorktree)) {
+    let parentHead = parent.baseSha ?? "initial-parent-head";
+    try {
+      parentHead = await ops.readWorktreeHead({ cwd: parent.path });
+    } catch (error) {
+      if (!parentHead) throw error;
+    }
+    const resumableWorktree = currentWorker && ["launching", "working", "recovered", "reported"].includes(currentWorker.lifecycle);
+    let taskWorktree = resumableWorktree && validTaskWorktree(currentWorker.taskWorktree) ? currentWorker.taskWorktree : null;
+    if (!taskWorktree) {
+      const attempt = parentHead.slice(0, 12);
       taskWorktree = await ops.createTaskWorktree({
         managedRepository: managed,
         parentKey: build.parentBranch,
-        childKey: task.id,
-        taskBranch: `${build.parentBranch}-${task.id}`,
-        baseRef: parent.branch,
+        childKey: `${task.id}-${attempt}`,
+        taskBranch: `${build.parentBranch}-${task.id}-${attempt}`,
+        baseRef: parentHead,
       });
       await updateRegistry(store, (registry) => ({
         ...registry,
@@ -309,6 +319,12 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     });
     if (typeof adapters.onTaskIntegrated === "function") {
       await adapters.onTaskIntegrated({ task, taskWorktree, parentWorktree: parent, report, registry: updatedRegistry });
+    }
+    try {
+      await ops.removeTaskWorktree({ managedRepository: managed, taskWorktree });
+      await updateRegistry(store, (registry) => ({ ...registry, workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], worktreeCleaned: true } } }));
+    } catch (cleanupError) {
+      await updateRegistry(store, (registry) => ({ ...registry, workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) } } }));
     }
     completed.push({ task, worker, report });
     if (typeof ops.onProgress === "function") {
