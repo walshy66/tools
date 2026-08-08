@@ -170,6 +170,10 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
       completed.push({ task, worker: currentWorker, report: currentWorker.report });
       continue;
     }
+    if (["Done", "Review"].includes(task.sourceState)) {
+      if (task.sourceState === "Done") completed.push({ task, worker: currentWorker ?? null, report: currentWorker?.report ?? null });
+      continue;
+    }
     if (task.executionMode === "HITL") {
       throw new BuildRunnerError(`Build reached human gate ${task.id}; explicit operator participation is required and no worker was launched.`);
     }

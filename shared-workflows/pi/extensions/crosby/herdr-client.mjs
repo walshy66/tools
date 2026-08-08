@@ -69,6 +69,10 @@ export function createHerdrClient({ invoke, platform = process.platform } = {}) 
       return object(await call("snapshot", {}), "snapshot");
     },
 
+    async focusTab({ tab } = {}) {
+      return call("focusTab", { tab: text(tab, "tab") });
+    },
+
     async createTaskTab({ workspace, label, cwd, focus = false, env } = {}) {
       const input = {
         workspace: text(workspace, "workspace"),

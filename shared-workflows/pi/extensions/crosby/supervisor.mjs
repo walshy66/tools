@@ -86,7 +86,27 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
     let registry = await readRegistry(store);
     const existing = registry.workers[id];
     if (existing?.agent && ["launching", "working"].includes(existing.lifecycle)) {
-      return (await adoptWorker(id)).worker;
+      const adopted = await adoptWorker(id);
+      if (adopted.adopted) {
+        if (typeof client.focusTab === "function" && existing.tab) await client.focusTab({ tab: existing.tab });
+        return adopted.worker;
+      }
+    }
+    const expectedAgent = workerAgentName(store, id);
+    if (existing?.tab || existing?.pane || existing?.agent) {
+      try {
+        const inspection = await client.inspectAgent({ agent: expectedAgent });
+        if (["working", "idle", "blocked"].includes(inspection.state)) {
+          const adopted = await updateRegistry(store, (current) => ({
+            ...current,
+            workers: { ...current.workers, [id]: { ...(current.workers[id] ?? {}), taskId: id, agent: expectedAgent, lifecycle: inspection.state === "working" ? "working" : "recovered" } },
+          }));
+          if (typeof client.focusTab === "function" && existing?.tab) await client.focusTab({ tab: existing.tab });
+          return adopted.workers[id];
+        }
+      } catch {
+        // No live worker with the deterministic name; create one below.
+      }
     }
     if (registry.currentTask && registry.currentTask !== id) {
       fail(`Cannot launch ${id}; task ${registry.currentTask} already owns the worker gate.`);

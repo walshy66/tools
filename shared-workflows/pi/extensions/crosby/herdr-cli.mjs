@@ -10,6 +10,8 @@ function argumentsFor(operation, input) {
       return ["api", "snapshot"];
     case "createTab":
       return ["tab", "create", "--workspace", input.workspace, "--label", input.label, "--cwd", input.cwd, ...(input.focus ? ["--focus"] : ["--no-focus"]), ...Object.entries(input.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`])];
+    case "focusTab":
+      return ["tab", "focus", input.tab];
     case "closeTab":
       return ["tab", "close", input.tab];
     case "startAgent":
@@ -64,6 +66,8 @@ export function createHerdrCliInvoker({ exec } = {}) {
           tab: raw.tab_id ?? raw.tab?.tab_id ?? raw.tab,
           pane: raw.pane ?? raw.pane_id ?? raw.root_pane?.pane_id,
         };
+      case "focusTab":
+        return { tab: raw.tab ?? raw.tab_id ?? input.tab };
       case "closeTab":
         return { tab: raw.tab ?? raw.tab_id ?? input.tab };
       case "startAgent":

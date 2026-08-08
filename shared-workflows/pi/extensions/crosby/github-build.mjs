@@ -98,7 +98,7 @@ export function issueToBuildTask(issue, order) {
   const modelHint = labels.find((label) => label.startsWith("model:"))?.slice("model:".length) || null;
   const effortHint = labels.find((label) => label.startsWith("effort:"))?.slice("effort:".length) || null;
   const mode = labels.some((label) => label === "mode:hitl") ? "HITL" : "AFK";
-  return { id: taskIdForIssue(issue), title: issue.title, outcome, criteria, scope, verification, guardrails, mode, modelHint, effortHint, tabLabel: `Task #${issue.number}`, order };
+  return { id: taskIdForIssue(issue), title: issue.title, outcome, criteria, scope, verification, guardrails, mode, modelHint, effortHint, sourceState: issue.state?.name ?? null, tabLabel: `Task #${issue.number}`, order };
 }
 
 export function renderGitHubBuild(queue) {
