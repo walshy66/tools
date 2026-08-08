@@ -107,8 +107,9 @@ function parseTask(block, index) {
     verification: verification(block, id),
     instructions,
     guardrails,
-    modelHint: metadata(block, "Model hint") || null,
+    modelHint: metadata(block, "Model") || metadata(block, "Model hint") || null,
     thinkingHint: metadata(block, "Thinking") || metadata(block, "Thinking hint") || null,
+    sourceState: metadata(block, "Source state") || null,
     order: index,
   };
 }
