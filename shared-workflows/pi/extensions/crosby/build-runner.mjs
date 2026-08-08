@@ -278,7 +278,13 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
         currentTask: null,
         workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "review", report: reviewReport, integrationError: reviewReport.summary } },
       }));
-      if (typeof adapters.onTaskReview === "function") await adapters.onTaskReview({ task, taskWorktree, parentWorktree: parent, report: reviewReport, registry: reviewedRegistry });
+      if (typeof adapters.onTaskReview === "function") {
+        try {
+          await adapters.onTaskReview({ task, taskWorktree, parentWorktree: parent, report: reviewReport, registry: reviewedRegistry });
+        } catch (reviewError) {
+          await updateRegistry(store, (registry) => ({ ...registry, workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], reviewUpdateError: reviewError instanceof Error ? reviewError.message : String(reviewError) } } }));
+        }
+      }
       if (typeof ops.onProgress === "function") await ops.onProgress(summarizeBuildProgress({ build, registry: reviewedRegistry }));
       continue;
     }
