@@ -10,7 +10,7 @@ From a GitHub repository with `gh` authenticated, bootstrap the workflow labels:
 ./scripts/bootstrap-github-labels.sh OWNER/REPO
 ```
 
-`to-issues` creates a parent issue and ordered child issues. Automated children use `type:child`, `status:ready-to-build`, `mode:afk`, and a work-type label. Each child body must include `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails` sections. `model:` and `effort:` labels are advisory hints; Crosby makes the final model selection.
+`to-issues` creates a parent issue and ordered child issues. Automated children use `type:child`, `status:ready-to-build`, `mode:afk`, and a work-type label. Each child body must include `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails` sections. `model:` and `thinking:` labels set worker launch preferences when valid; Crosby falls back safely when unavailable.
 
 
 ## Manifest

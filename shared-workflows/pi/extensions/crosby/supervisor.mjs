@@ -29,8 +29,8 @@ function workerModelSelection(value, id) {
   if (!/^[A-Za-z0-9._~:/-]+$/.test(model) || !model.includes("/")) {
     fail(`${id} model selection must be a safe provider/model identifier.`);
   }
-  if (value?.thinking !== "medium") fail(`${id} worker thinking must be medium.`);
-  return { model, thinking: "medium" };
+  if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value?.thinking)) fail(`${id} worker thinking must be a supported Pi thinking level.`);
+  return { model, thinking: value.thinking };
 }
 
 function workerAgentName(store, id) {

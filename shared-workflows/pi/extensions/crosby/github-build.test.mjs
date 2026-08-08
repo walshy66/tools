@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { issueToBuildTask, renderGitHubBuild, taskIdForIssue } from "./github-build.mjs";
 
-const child = (number, body) => ({ number, identifier: `#${number}`, title: `Task ${number}`, body, labels: { nodes: [{ name: "mode:afk" }] } });
+const child = (number, body, labels = ["mode:afk"]) => ({ number, identifier: `#${number}`, title: `Task ${number}`, body, labels: { nodes: labels.map((name) => ({ name })) } });
 const body = `## Outcome\nImplement the adapter.\n\n## Acceptance Criteria\n- Parse issues\n- Validate remotes\n\n## File Scope\n- shared-workflows/pi/extensions/crosby/**\n\n## Verification\n- node --test test.mjs\n\n## Guardrails\n- Do not bypass scope validation.`;
 
 test("maps GitHub issue numbers to stable local task IDs", () => {
   assert.equal(taskIdForIssue({ number: 17 }), "task-017");
   assert.equal(issueToBuildTask(child(17, body), 0).id, "task-017");
   assert.equal(issueToBuildTask(child(17, body), 0).tabLabel, "Task #17");
+  const routed = issueToBuildTask(child(17, body, ["mode:afk", "model:openai-codex/gpt-5.6-luna", "thinking:high"]), 0);
+  assert.equal(routed.modelHint, "openai-codex/gpt-5.6-luna");
+  assert.equal(routed.thinkingHint, "high");
 });
 
 test("renders a valid local build contract from a GitHub queue", () => {

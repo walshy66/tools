@@ -48,6 +48,14 @@ ensure_label "status:review" "d93f0b" "Needs human review or action"
 ensure_label "mode:afk" "0052cc" "Automation may run this issue"
 ensure_label "mode:hitl" "b60205" "Human-in-the-loop issue"
 
+ensure_label "thinking:off" "6f42c1" "Pi worker thinking level: off"
+ensure_label "thinking:minimal" "6f42c1" "Pi worker thinking level: minimal"
+ensure_label "thinking:low" "6f42c1" "Pi worker thinking level: low"
+ensure_label "thinking:medium" "6f42c1" "Pi worker thinking level: medium"
+ensure_label "thinking:high" "6f42c1" "Pi worker thinking level: high"
+ensure_label "thinking:xhigh" "6f42c1" "Pi worker thinking level: xhigh"
+ensure_label "thinking:max" "6f42c1" "Pi worker thinking level: max"
+
 ensure_label "wt:development" "0366d6" "Development work type for constitution routing"
 ensure_label "wt:process-automation" "0e8a16" "Process automation work type for constitution routing"
 
