@@ -19,6 +19,42 @@ test("renders a valid local build contract from a GitHub queue", () => {
   assert.match(markdown, /- Verification:/);
 });
 
+test("preserves complete nested execution contract sections", () => {
+  const nestedBody = `## Outcome
+Implement the adapter.
+
+## Acceptance Criteria
+- Parse issues
+- Validate remotes
+
+## File Scope
+### Expected Files
+- \`src/adapter.mjs\`
+- \`test/adapter.test.mjs\` only if regression coverage is needed
+
+### Do Not Touch
+- \`migrations/**\` — schema changes are out of scope
+
+## Verification
+### Test Command
+\`\`\`bash
+node --test test/adapter.test.mjs
+\`\`\`
+
+Confirm the full suite passes.
+
+## Guardrails
+- Preserve repository validation.
+- Do not bypass scope checks.`;
+
+  const task = issueToBuildTask(child(18, nestedBody), 0);
+
+  assert.deepEqual(task.criteria, ["Parse issues", "Validate remotes"]);
+  assert.deepEqual(task.scope, ["src/adapter.mjs", "test/adapter.test.mjs"]);
+  assert.deepEqual(task.verification, ["node --test test/adapter.test.mjs"]);
+  assert.match(task.guardrails, /Preserve repository validation\.[\s\S]*Do not bypass scope checks\.[\s\S]*Do not touch:[\s\S]*migrations\/\*\*[\s\S]*Verification notes:[\s\S]*Confirm the full suite passes\./);
+});
+
 test("fails closed when a child issue omits execution contract sections", () => {
-  assert.throws(() => issueToBuildTask(child(18, "## Outcome\nDo it."), 0), /Acceptance Criteria|File Scope|Verification/);
+  assert.throws(() => issueToBuildTask(child(19, "## Outcome\nDo it."), 0), /Acceptance Criteria|File Scope|Verification/);
 });
