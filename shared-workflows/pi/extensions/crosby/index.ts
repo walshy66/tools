@@ -192,6 +192,12 @@ async function isGitRepository(pi: ExtensionAPI, cwd: string) {
   return result.code === 0 && result.stdout.trim() === "true";
 }
 
+async function resolveRepositoryIdentity(pi: ExtensionAPI, cwd: string) {
+  const invocation = getGitInvocation(["-C", cwd, "remote", "get-url", "origin"]);
+  const remote = await pi.exec(invocation.command, invocation.args, { cwd });
+  return remote.code === 0 && remote.stdout.trim() ? remote.stdout.trim() : path.resolve(cwd);
+}
+
 async function getCurrentGitBranch(pi: ExtensionAPI, cwd: string) {
   const result = await execGit(pi, ["branch", "--show-current"], cwd);
   return result.stdout.trim();
