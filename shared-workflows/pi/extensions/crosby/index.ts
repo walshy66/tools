@@ -437,6 +437,7 @@ function startGitHubQueueMonitor({ client, queue, dashboardController, buildFold
   let stopped = false;
   let running = false;
   let currentQueue = queue;
+  let lastAttemptSignature = "";
   const poll = async () => {
     if (stopped || running) return;
     try {
@@ -450,6 +451,9 @@ function startGitHubQueueMonitor({ client, queue, dashboardController, buildFold
       }
       const runnable = refreshed.children.some((child: any) => ["Ready", "Ready to Build", "Execute"].includes(child.state.name));
       if (!runnable) return;
+      const signature = refreshed.children.map((child: any) => `${child.number}:${child.state.name}`).join("|");
+      if (signature === lastAttemptSignature) return;
+      lastAttemptSignature = signature;
       running = true;
       const folder = await writeGitHubBuild(refreshed, buildRoot);
       await runBuild(folder);

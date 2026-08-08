@@ -95,17 +95,21 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
     const expectedAgent = workerAgentName(store, id);
     if (existing?.tab || existing?.pane || existing?.agent) {
       try {
-        const inspection = await client.inspectAgent({ agent: expectedAgent });
+        const inspection = await client.inspectAgent({ agent: existing.pane ?? existing.agent ?? expectedAgent });
         if (["working", "idle", "blocked"].includes(inspection.state)) {
+          const actualAgent = inspection.name ?? existing.agent ?? expectedAgent;
+          if (inspection.state === "idle" && typeof client.promptAgent === "function") {
+            await client.promptAgent({ agent: actualAgent, prompt: workerPrompt, wait: false });
+          }
           const adopted = await updateRegistry(store, (current) => ({
             ...current,
-            workers: { ...current.workers, [id]: { ...(current.workers[id] ?? {}), taskId: id, agent: expectedAgent, lifecycle: inspection.state === "working" ? "working" : "recovered" } },
+            workers: { ...current.workers, [id]: { ...(current.workers[id] ?? {}), taskId: id, agent: actualAgent, lifecycle: inspection.state === "working" ? "working" : "recovered" } },
           }));
           if (typeof client.focusTab === "function" && existing?.tab) await client.focusTab({ tab: existing.tab });
           return adopted.workers[id];
         }
       } catch {
-        // No live worker with the deterministic name; create one below.
+        // No live worker with the recorded pane or agent; create one below.
       }
     }
     if (registry.currentTask && registry.currentTask !== id) {
