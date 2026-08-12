@@ -34,6 +34,7 @@ let activeGitHubClient: any = null;
 let activeGitHubQueue: any = null;
 let activeBuildContext: any = null;
 let activeGitHubMonitorStop: (() => void) | null = null;
+let activeGitHubResume: (() => Promise<unknown>) | null = null;
 import {
   createCrosbyDashboard,
   markDashboardExecutionStarted,
@@ -370,6 +371,25 @@ const workerStoppedReportSchema = Type.Object({
   recoveryNotes: Type.Array(Type.String()),
 });
 
+function formatWorkerSessionSummary(taskKey: string, report: any) {
+  const lines = [`Crosby session summary — ${taskKey}`, `Outcome: ${report.outcome}`];
+  if (report.taskOutcome) lines.push(`Task result: ${report.taskOutcome}`);
+  if (report.summary) lines.push(`Summary: ${report.summary}`);
+  if (report.changes?.paths?.length) lines.push(`Changed files: ${report.changes.paths.join(", ")}`);
+  if (report.changes?.commit) lines.push(`Commit: ${report.changes.commit}`);
+  if (report.verification?.length) {
+    lines.push("Verification:");
+    for (const check of report.verification) lines.push(`- ${check.command}: ${check.result}`);
+  }
+  if (report.risks?.length) lines.push(`Risks/notes: ${report.risks.join("; ")}`);
+  if (report.requiredHumanAction) lines.push(`Human action required: ${report.requiredHumanAction}`);
+  if (report.recoveryNotes?.length) lines.push(`Recovery/testing notes: ${report.recoveryNotes.join("; ")}`);
+  lines.push(report.outcome === "complete"
+    ? "Test guidance: run the verification commands listed above and exercise the acceptance criteria for this task."
+    : "Next step: follow the human action and recovery/testing notes above before marking this task complete.");
+  return lines.join("\n");
+}
+
 function registerWorkerReportTool(pi: ExtensionAPI) {
   const workerEnvironmentReady = ["CROSBY_REGISTRY_ROOT", "CROSBY_REPOSITORY_ID", "CROSBY_PARENT_KEY", "CROSBY_TASK_KEY"].every((name) => process.env[name]?.trim());
   if (!workerEnvironmentReady) return;
@@ -390,9 +410,10 @@ function registerWorkerReportTool(pi: ExtensionAPI) {
         report: params,
         emitHerdrBlocked: typeof emit === "function" ? (payload: any) => emit.call((pi as any).events, "herdr:blocked", payload) : undefined,
       });
+      const taskKey = saved.registry?.taskKey ?? process.env.CROSBY_TASK_KEY;
       return {
-        content: [{ type: "text", text: `Crosby worker report recorded for ${saved.registry?.taskKey ?? process.env.CROSBY_TASK_KEY}.` }],
-        details: { outcome: params.outcome, reportedAt: saved.reportedAt },
+        content: [{ type: "text", text: `${formatWorkerSessionSummary(taskKey, params)}\n\nCrosby worker report recorded for ${taskKey}.` }],
+        details: { outcome: params.outcome, reportedAt: saved.reportedAt, sessionSummary: formatWorkerSessionSummary(taskKey, params) },
         terminate: true,
       };
     },
@@ -438,10 +459,14 @@ function startGitHubQueueMonitor({ client, queue, dashboardController, buildFold
   let running = false;
   let currentQueue = queue;
   let lastAttemptSignature = "";
+  const baseDelayMs = Math.max(10_000, Number(process.env.CROSBY_GITHUB_POLL_MS ?? 30_000));
+  let delayMs = baseDelayMs;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const poll = async () => {
     if (stopped || running) return;
     try {
       const refreshed = await client.loadParentQueue(currentQueue.parent.identifier);
+      delayMs = baseDelayMs;
       currentQueue = refreshed;
       activeGitHubQueue = refreshed;
       dashboardController?.queueRefreshed(refreshed);
@@ -458,18 +483,27 @@ function startGitHubQueueMonitor({ client, queue, dashboardController, buildFold
       const folder = await writeGitHubBuild(refreshed, buildRoot);
       await runBuild(folder);
     } catch (error) {
-      dashboardController?.fatal(error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (/rate limit|api rate limit|secondary rate limit/i.test(message)) {
+        delayMs = Math.min(Math.max(baseDelayMs * 10, 300_000), delayMs * 2);
+      } else {
+        dashboardController?.fatal(error);
+        delayMs = baseDelayMs;
+      }
     } finally {
       running = false;
     }
   };
-  const timer = setInterval(poll, 3000);
+  const schedule = () => {
+    if (!stopped) timer = setTimeout(async () => { await poll(); schedule(); }, delayMs);
+  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
     if (activeGitHubMonitorStop === stop) activeGitHubMonitorStop = null;
   };
+  schedule();
   activeGitHubMonitorStop = stop;
   return stop;
 }
@@ -502,10 +536,15 @@ function registerReviewCompletionTool(pi: ExtensionAPI) {
     promptGuidelines: ["Use this tool when the operator says the active Crosby review is done, complete, reviewed, approved, or otherwise finished."],
     parameters: Type.Object({}),
     async execute() {
-      if (!activeGitHubClient || !activeGitHubQueue || !activeDashboardController) throw new Error("No active GitHub Crosby review is available.");
-      const reviewTask = activeDashboardController.dashboard.tasks.find((task: any) => task.status === "review");
-      if (!reviewTask?.issueKey) throw new Error("No Crosby task is currently awaiting human review.");
-      const taskId = `task-${String(reviewTask.issueKey).replace(/\D/g, "").padStart(3, "0")}`;
+      if (!activeGitHubClient || !activeGitHubQueue || !activeDashboardController) throw new Error("No active GitHub Crosby review is available in the initiating Pi session.");
+      const refreshed = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
+      activeGitHubQueue = refreshed;
+      activeDashboardController.queueRefreshed(refreshed);
+      const reviewTask = activeDashboardController.dashboard.tasks.find((task: any) => task.status === "review")
+        ?? refreshed.children.find((child: any) => child.state.name === "Review");
+      const reviewIssueKey = reviewTask?.issueKey ?? refreshed.children.find((child: any) => child.state.name === "Review")?.identifier;
+      if (!reviewIssueKey) throw new Error("No Crosby task is currently awaiting human review.");
+      const taskId = `task-${String(reviewIssueKey).replace(/\D/g, "").padStart(3, "0")}`;
       if (activeBuildContext) {
         const store = createRegistryStore(activeBuildContext);
         const registry = await readRegistry(store);
@@ -516,13 +555,17 @@ function registerReviewCompletionTool(pi: ExtensionAPI) {
           await updateRegistry(store, (current) => ({ ...current, workers: { ...current.workers, [taskId]: { ...current.workers[taskId], lifecycle: "integrated", report: { ...current.workers[taskId].report, outcome: "complete", taskOutcome: "Human review completed", changes: { paths: integration.changedPaths, commit: integration.commit }, verification: integration.verification, risks: [] } } } }));
         }
       }
-      await activeGitHubClient.moveIssue(reviewTask.issueKey, "Done");
-      await activeGitHubClient.addComment(reviewTask.issueKey, "Human review completed; task approved and marked complete by the operator.");
-      const refreshed = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
-      activeGitHubQueue = refreshed;
-      activeDashboardController.queueRefreshed(refreshed);
-      activeDashboardController.executionFinalized({ child: { identifier: reviewTask.issueKey }, workerResult: { outcome: "done", summary: "Human review completed." } });
-      return { content: [{ type: "text", text: `Crosby review completed for ${reviewTask.issueKey}; GitHub and the dashboard were updated.` }] };
+      const currentChild = refreshed.children.find((child: any) => child.identifier === reviewIssueKey || child.number === String(reviewIssueKey).replace(/\D/g, ""));
+      if (currentChild?.state.name !== "Done") {
+        await activeGitHubClient.moveIssue(reviewIssueKey, "Done");
+        await activeGitHubClient.addComment(reviewIssueKey, "Human review completed; task approved and marked complete by the operator.");
+      }
+      const completedQueue = await activeGitHubClient.loadParentQueue(activeGitHubQueue.parent.identifier);
+      activeGitHubQueue = completedQueue;
+      activeDashboardController.queueRefreshed(completedQueue);
+      activeDashboardController.executionFinalized({ child: { identifier: reviewIssueKey }, workerResult: { outcome: "done", summary: "Human review completed." } });
+      if (activeGitHubResume) await activeGitHubResume();
+      return { content: [{ type: "text", text: `Crosby review completed for ${reviewIssueKey}; GitHub, the dashboard, and the queue were updated.` }] };
     },
   });
 }
@@ -603,7 +646,8 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           dashboardController = createDashboardController(ctx, githubQueue, "manual");
           activeDashboardController = dashboardController;
           await openDashboardPane(pi, dashboardController, sourcePath, herdrContext);
-          if (githubQueue.children[0]) dashboardController.executionStarted({ child: githubQueue.children[0], parent: githubQueue.parent });
+          const firstActiveChild = githubQueue.children.find((child: any) => !["Done", "Review"].includes(child.state?.name));
+          if (firstActiveChild) dashboardController.executionStarted({ child: firstActiveChild, parent: githubQueue.parent });
         }
         const invokeHerdrCli = createHerdrCliInvoker({ exec: (commandName: string, commandArgs: string[]) => pi.exec(commandName, commandArgs) });
         const herdr = createHerdrClient({ invoke: invokeHerdrCli });
@@ -655,6 +699,7 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           }
         };
         activeBuildContext = { root: registryRoot, registryRoot, repositoryIdentity: identity, parentKey: githubQueue?.parent?.branchName ?? command.buildFolder, buildId: githubQueue?.parent?.number ? `github-${githubQueue.parent.number}` : null, buildFolder: command.buildFolder, parentBranch: githubQueue?.parent?.branchName ?? null, spaceId: herdrContext.workspace };
+        let parentClaimed = false;
         const buildAdapters = {
           herdrClient: herdr,
           selectTaskModel: async ({ task }: any) => {
@@ -667,6 +712,10 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           integrateTask: (input: any) => integrateTask(input),
           onTaskStarting: async ({ task }: any) => {
             if (githubClient) {
+              if (!parentClaimed && githubQueue?.parent) {
+                await githubClient.moveIssue(githubQueue.parent.identifier, "Building");
+                parentClaimed = true;
+              }
               const issueNumber = task.id.replace(/^task-0*/, "");
               await githubClient.moveIssue(issueNumber, "Building");
               const active = activeDashboardController?.dashboard?.tasks?.find((entry: any) => entry.issueKey === `#${issueNumber}`);
@@ -674,18 +723,18 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             }
           },
           onTaskIntegrated: async ({ task, report }: any) => {
-            dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
-            dashboardController?.executionFinalized({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+            const issueNumber = task.id.replace(/^task-0*/, "");
+            dashboardController?.executionFinished({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
+            dashboardController?.executionFinalized({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
             if (githubClient) {
-              const issueNumber = task.id.replace(/^task-0*/, "");
               await githubClient.moveIssue(issueNumber, "Done");
               await githubClient.addComment(issueNumber, buildGitHubChildProgress({ child: { identifier: `#${issueNumber}` }, outcome: report.outcome, summary: report.summary, changes: report.changes?.paths ?? [report.changes?.commit ?? "recorded in the durable worktree"], verification: report.verification?.map((entry: any) => `${entry.command}: ${entry.result}`), recoveryNotes: report.risks }));
             }
           },
           onTaskReview: async ({ task, report }: any) => {
-            dashboardController?.executionFinished({ child: { identifier: task.id, title: task.title }, workerResult: { outcome: "review", requiredHumanAction: report.requiredHumanAction, recoveryNotes: report.recoveryNotes } });
+            const issueNumber = task.id.replace(/^task-0*/, "");
+            dashboardController?.executionFinished({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: "review", requiredHumanAction: report.requiredHumanAction, recoveryNotes: report.recoveryNotes } });
             if (githubClient) {
-              const issueNumber = task.id.replace(/^task-0*/, "");
               await githubClient.moveIssue(issueNumber, "Review");
               await githubClient.addComment(issueNumber, buildGitHubChildProgress({ child: { identifier: `#${issueNumber}` }, outcome: "review", summary: report.summary, recoveryNotes: [report.requiredHumanAction, ...(report.recoveryNotes ?? [])] }));
             }
@@ -695,11 +744,31 @@ export default function crosbyExtension(pi: ExtensionAPI) {
             ctx.ui.notify(formatBuildProgress(progress), "info");
           },
           emitLifecycle: (event: any) => {
-            if (event.lifecycle === "working") dashboardController?.workerStarted(event);
+            if (event.lifecycle === "working") {
+              const issueNumber = String(event.taskId ?? "").replace(/^task-0*/, "");
+              dashboardController?.workerStarted({ ...event, taskId: issueNumber ? `#${issueNumber}` : event.taskId });
+            }
             pi.appendEntry("crosby-worker-lifecycle", event);
           },
         };
-        const runDurableBuild = (buildFolder: string) => runBuild({ buildFolder, sourcePath, workspace: herdrContext.workspace, pane: herdrContext.pane, agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor", registryRoot, repositoryIdentity: identity, adapters: buildAdapters });
+        let durableBuildRunning = false;
+        const runDurableBuild = async (buildFolder: string) => {
+          if (durableBuildRunning) return null;
+          durableBuildRunning = true;
+          try {
+            return await runBuild({ buildFolder, sourcePath, workspace: herdrContext.workspace, pane: herdrContext.pane, agent: process.env.HERDR_AGENT_NAME || "crosby-supervisor", registryRoot, repositoryIdentity: identity, adapters: buildAdapters });
+          } finally {
+            durableBuildRunning = false;
+          }
+        };
+        if (githubClient && githubQueue) {
+          activeGitHubResume = async () => {
+            const refreshed = await githubClient.loadParentQueue(githubQueue.parent.identifier);
+            githubQueue = refreshed;
+            const folder = await writeGitHubBuild(refreshed, path.join(homedir(), ".pi", "crosby", "github-builds"));
+            return runDurableBuild(folder);
+          };
+        }
         let result;
         try {
           result = await runDurableBuild(command.buildFolder);

@@ -147,8 +147,8 @@ test("runs tasks strictly in authored order and requires explicit complete repor
   assert.deepEqual(progressUpdates.map((progress) => [progress.completed, progress.remaining]), [[1, 1], [2, 0]]);
   const firstWorker = finalRegistry.workers["task-001"];
   assert.deepEqual(firstWorker.taskWorktree, {
-    path: "/work/task-001",
-    branch: "crosby/001-example-task-001",
+    path: "/work/task-001-source-head",
+    branch: "crosby/001-example-task-001-source-head",
     baseSha: "base",
   });
   assert.deepEqual(firstWorker.modelSelection, {
@@ -191,26 +191,28 @@ test("stops at a HITL task before selecting a model or launching a worker", asyn
     .replace("**Outcome**: First", "**Outcome**: First\n**Execution mode**: HITL");
   await writeFile(path.join(buildFolder, "tasks.md"), hitlTask);
 
-  await assert.rejects(
-    runBuild({
-      buildFolder,
-      sourcePath: root,
-      workspace: "space-1",
-      pane: "pane-1",
-      agent: "supervisor",
-      registryRoot: path.join(root, "registry"),
-      adapters: {
-        createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
-        createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
-        createHerdrSupervisor: () => ({
-          ensureSupervisor: async () => {},
-          launchWorker: async () => { throw new Error("must not launch HITL task"); },
-        }),
-        selectTaskModel: async () => { throw new Error("must not select a model for HITL task"); },
-      },
-    }),
-    /human gate task-001/,
-  );
+  const reviews = [];
+  const result = await runBuild({
+    buildFolder,
+    sourcePath: root,
+    workspace: "space-1",
+    pane: "pane-1",
+    agent: "supervisor",
+    registryRoot: path.join(root, "registry"),
+    adapters: {
+      createManagedRepository: async () => ({ barePath: "/bare", worktreeRoot: "/work" }),
+      createParentWorktree: async () => ({ path: "/work/parent", branch: "crosby/001-example" }),
+      createHerdrSupervisor: () => ({
+        ensureSupervisor: async () => {},
+        launchWorker: async () => { throw new Error("must not launch HITL task"); },
+      }),
+      selectTaskModel: async () => { throw new Error("must not select a model for HITL task"); },
+      onTaskReview: async (event) => reviews.push(event),
+    },
+  });
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0].task.id, "task-001");
+  assert.equal(result.completed.length, 0);
 });
 
 test("resume integrates a reported worker from its persisted worktree without relaunching", async () => {

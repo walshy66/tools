@@ -119,6 +119,16 @@ export async function createParentWorktree({ managedRepository, parentKey, paren
   return { path: pathname, branch, baseSha: await gitOutput(["-C", pathname, "rev-parse", "HEAD"]) };
 }
 
+export async function readWorktreeHead({ cwd } = {}) {
+  return gitOutput(["-C", text(cwd, "worktree"), "rev-parse", "HEAD"]);
+}
+
+export async function removeTaskWorktree({ managedRepository, taskWorktree } = {}) {
+  if (!managedRepository?.barePath || !taskWorktree?.path) managedGitError("A managed repository and task worktree are required for cleanup.");
+  await git(["-C", managedRepository.barePath, "worktree", "remove", "--force", taskWorktree.path]);
+  return { removed: true, path: taskWorktree.path, branch: taskWorktree.branch ?? null };
+}
+
 export async function createTaskWorktree({ managedRepository, parentKey, childKey, taskBranch, baseRef } = {}) {
   if (!managedRepository?.barePath) managedGitError("managedRepository is required.");
   const parent = text(parentKey, "parentKey");

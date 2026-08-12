@@ -103,12 +103,13 @@ function parseTask(block, index) {
     executionMode,
     acceptanceCriteria,
     parallel,
-    fileScope: fileScope(block, id),
-    verification: verification(block, id),
+    fileScope: executionMode === "HITL" ? [] : fileScope(block, id),
+    verification: executionMode === "HITL" ? [] : verification(block, id),
     instructions,
     guardrails,
-    modelHint: metadata(block, "Model hint") || null,
-    effortHint: metadata(block, "Effort hint") || null,
+    modelHint: metadata(block, "Model") || metadata(block, "Model hint") || null,
+    thinkingHint: metadata(block, "Thinking") || metadata(block, "Thinking hint") || null,
+    sourceState: metadata(block, "Source state") || null,
     order: index,
   };
 }

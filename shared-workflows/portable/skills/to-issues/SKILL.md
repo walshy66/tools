@@ -52,6 +52,12 @@ Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that 
 - Ensure each issue can be understood and tested alone.
 - Label blocking dependencies clearly in the proposed issue body.
 - Propose execution windows or grouping when useful.
+- For every AFK/buildable issue, assess and assign execution labels:
+  - `model:<provider>/<model-id>` — the exact available Pi model identifier that should launch the worker.
+  - `thinking:<off|minimal|low|medium|high|xhigh|max>` — the Pi thinking level for the worker.
+  - Use the least costly capable model and the lowest thinking level that safely satisfies the task; choose stronger reasoning for security, architecture, migrations, concurrency, broad cross-module work, or ambiguous requirements.
+  - Only use model identifiers available to the current Crosby/Pi configuration. If availability cannot be verified, omit the model label rather than guessing.
+  - These labels are execution settings when valid; Crosby safely falls back when a model is unavailable or a label is invalid.
 - For every AFK/buildable issue, draft a Crosby execution envelope:
   - `## Expected Files` — files or directories the worker is expected to touch.
   - `## Do Not Touch` — files/directories that are explicitly out of scope.
@@ -98,14 +104,7 @@ Use `gh issue create` for each child. Each created child should include:
   - AFK/buildable issues: `mode:afk`, `status:ready-to-build`
   - HITL/manual issues: `mode:hitl`, `status:ready` or `status:review`
   - work type: `wt:development` or `wt:process-automation`
-  - optional worker routing labels only when justified: `model:<model-id>` and/or `effort:<low|medium|high|...>`
-
-Default effort guidance:
-
-- Do not add `effort:*` when the repo/Crosby default is appropriate.
-- Use `effort:low` for mechanical, tightly scoped changes.
-- Use `effort:medium` for normal implementation with some design judgement.
-- Reserve `effort:high`+ for high-risk architecture, security, data migration, concurrency, or broad cross-module work.
+  - worker routing labels: `model:<provider>/<model-id>` and/or `thinking:<off|minimal|low|medium|high|xhigh|max>` when assessed
 
 Example:
 
@@ -113,7 +112,7 @@ Example:
 gh issue create \
   --title "Add backend validation" \
   --body "Parent: #122\n\n## Scope\n...\n\n## Expected Files\n- backend/app/validation.py\n- backend/app/tests/test_validation.py\n\n## Do Not Touch\n- frontend/\n- migrations/\n\n## Crosby Locks\n- backend/app/validation.py\n\n## Test Command\npytest backend/app/tests/test_validation.py\n\n## Acceptance Criteria\n- [ ] ..." \
-  --label "type:child,status:ready-to-build,mode:afk,wt:development" \
+  --label "type:child,status:ready-to-build,mode:afk,wt:development,model:openai-codex/gpt-5.6-luna,thinking:low" \
   --milestone "my-feature"
 ```
 
@@ -152,7 +151,7 @@ Use a numbered list where each proposed issue includes:
 - Crosby locks (AFK required)
 - Test command (AFK required)
 - Acceptance criteria
-- Proposed labels, including any justified `model:*` or `effort:*` override
+- Proposed labels, including assessed `model:*` and `thinking:*` settings
 
 After approval and creation, also report:
 
@@ -172,7 +171,7 @@ After approval and creation, also report:
 - Would the issue list support incremental delivery?
 - Is each AFK/buildable issue parallel-ready with expected files, do-not-touch boundaries, a narrow test command, and Crosby locks?
 - Are vague or discovery-heavy items marked HITL or split into investigation-first issues instead of AFK parallel work?
-- Are `model:*` and `effort:*` labels used only when the task justifies overriding defaults?
+- Are `model:*` and `thinking:*` labels valid, justified, and based on available Pi configuration?
 - Are the local planning artifacts still aligned with the approved issue breakdown?
 - Has explicit user approval been captured before GitHub issue creation?
 - Will every created child inherit the parent milestone and relevant labels?

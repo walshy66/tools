@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseBuildTaskList } from "./task-list.mjs";
 import { createRegistryStore, readRegistry, updateRegistry } from "./registry.mjs";
-import { createManagedRepository, createParentWorktree, createTaskWorktree } from "./managed-git.mjs";
+import { createManagedRepository, createParentWorktree, createTaskWorktree, readWorktreeHead, removeTaskWorktree } from "./managed-git.mjs";
 import { createHerdrSupervisor } from "./supervisor.mjs";
 import { createHerdrClient } from "./herdr-client.mjs";
 
@@ -28,8 +28,8 @@ function validModelSelection(value) {
     && typeof value === "object"
     && typeof value.model === "string"
     && value.model.includes("/")
-    && value.thinking === "medium"
-    && value.source === "orchestrator";
+    && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value.thinking)
+    && ["orchestrator", "issue-label"].includes(value.source);
 }
 
 function validTaskWorktree(value) {
@@ -88,6 +88,9 @@ function taskPrompt(build, task) {
     "If acceptance requires an out-of-scope path, submit a blocked report naming the missing path instead of changing it.",
     "Read the applicable AGENTS.md chain before editing and work only in the assigned worktree.",
     "Before reporting, compare the complete task diff with the declared file scope and run every declared verification command; do not report skipped required checks as complete.",
+    "Stage all completed work with git add and create at least one commit whose message references the task ID before reporting complete.",
+    "Verify git status --porcelain is empty before reporting complete and include the commit hash in the completion report.",
+    "If you cannot commit the work or leave the worktree clean, submit a blocked report requiring human review instead of reporting complete.",
     "When finished, submit exactly one explicit crosby_worker_report terminal report. Do not report completion from idle state.",
   ].join("\n");
 }
@@ -123,6 +126,8 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     createManagedRepository,
     createParentWorktree,
     createTaskWorktree,
+    readWorktreeHead,
+    removeTaskWorktree,
     createHerdrSupervisor,
     ...adapters,
   };
@@ -175,7 +180,22 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
       continue;
     }
     if (task.executionMode === "HITL") {
-      throw new BuildRunnerError(`Build reached human gate ${task.id}; explicit operator participation is required and no worker was launched.`);
+      const reviewReport = {
+        outcome: "blocked",
+        summary: "This task requires human-in-the-loop execution.",
+        requiredHumanAction: task.outcome,
+        recoveryNotes: ["Complete the manual acceptance steps, then close the GitHub issue or approve it from the initiating Pi session."],
+        requestHerdrBlocked: true,
+      };
+      const reviewedRegistry = await updateRegistry(store, (registry) => ({
+        ...registry,
+        queueState: "ready",
+        currentTask: null,
+        workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], taskId: task.id, lifecycle: "review", report: reviewReport } },
+      }));
+      if (typeof adapters.onTaskReview === "function") await adapters.onTaskReview({ task, report: reviewReport, registry: reviewedRegistry });
+      if (typeof ops.onProgress === "function") await ops.onProgress(summarizeBuildProgress({ build, registry: reviewedRegistry }));
+      continue;
     }
     if (typeof adapters.onTaskStarting === "function") await adapters.onTaskStarting({ task, registry: current });
     const hasReportedCompletion = currentWorker?.lifecycle === "reported" && currentWorker.report?.outcome === "complete";
@@ -199,14 +219,22 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
         },
       }));
     }
-    let taskWorktree = currentWorker?.taskWorktree;
-    if (!validTaskWorktree(taskWorktree)) {
+    let parentHead = parent.baseSha ?? "initial-parent-head";
+    try {
+      parentHead = await ops.readWorktreeHead({ cwd: parent.path });
+    } catch (error) {
+      if (!parentHead) throw error;
+    }
+    const resumableWorktree = currentWorker && ["launching", "working", "recovered", "reported"].includes(currentWorker.lifecycle);
+    let taskWorktree = resumableWorktree && validTaskWorktree(currentWorker.taskWorktree) ? currentWorker.taskWorktree : null;
+    if (!taskWorktree) {
+      const attempt = parentHead.slice(0, 12);
       taskWorktree = await ops.createTaskWorktree({
         managedRepository: managed,
         parentKey: build.parentBranch,
-        childKey: task.id,
-        taskBranch: `${build.parentBranch}-${task.id}`,
-        baseRef: parent.branch,
+        childKey: `${task.id}-${attempt}`,
+        taskBranch: `${build.parentBranch}-${task.id}-${attempt}`,
+        baseRef: parentHead,
       });
       await updateRegistry(store, (registry) => ({
         ...registry,
@@ -258,13 +286,45 @@ export async function runBuild({ buildFolder, sourcePath, workspace, pane, agent
     }
     if (report.outcome !== "complete") throw new BuildRunnerError(`Worker ${task.id} reported ${report.outcome}; queue stopped.`);
     if (typeof adapters.integrateTask !== "function") throw new BuildRunnerError("A task integration adapter is required before advancing the build.");
-    await adapters.integrateTask({ task, taskWorktree, parentWorktree: parent, report });
+    let integration;
+    try {
+      integration = await adapters.integrateTask({ task, taskWorktree, parentWorktree: parent, report });
+    } catch (error) {
+      const reviewReport = {
+        outcome: "blocked",
+        summary: `Worker completed, but Crosby could not integrate the task: ${error instanceof Error ? error.message : String(error)}`,
+        requiredHumanAction: `Inspect the retained ${task.id} worktree, reconcile the declared file scope or changes, then approve the task for integration.`,
+        recoveryNotes: ["The worker commit and retained worktree were preserved; no parent merge was performed."],
+        requestHerdrBlocked: true,
+      };
+      const reviewedRegistry = await updateRegistry(store, (registry) => ({
+        ...registry,
+        queueState: "ready",
+        currentTask: null,
+        workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "review", report: reviewReport, integrationError: reviewReport.summary } },
+      }));
+      if (typeof adapters.onTaskReview === "function") {
+        try {
+          await adapters.onTaskReview({ task, taskWorktree, parentWorktree: parent, report: reviewReport, registry: reviewedRegistry });
+        } catch (reviewError) {
+          await updateRegistry(store, (registry) => ({ ...registry, workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], reviewUpdateError: reviewError instanceof Error ? reviewError.message : String(reviewError) } } }));
+        }
+      }
+      if (typeof ops.onProgress === "function") await ops.onProgress(summarizeBuildProgress({ build, registry: reviewedRegistry }));
+      continue;
+    }
     const updatedRegistry = await updateRegistry(store, (registry) => {
       const workers = { ...registry.workers, [task.id]: { ...registry.workers[task.id], lifecycle: "integrated", report } };
       return { ...registry, workers };
     });
     if (typeof adapters.onTaskIntegrated === "function") {
       await adapters.onTaskIntegrated({ task, taskWorktree, parentWorktree: parent, report, registry: updatedRegistry });
+    }
+    try {
+      await ops.removeTaskWorktree({ managedRepository: managed, taskWorktree });
+      await updateRegistry(store, (registry) => ({ ...registry, workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], worktreeCleaned: true } } }));
+    } catch (cleanupError) {
+      await updateRegistry(store, (registry) => ({ ...registry, workers: { ...registry.workers, [task.id]: { ...registry.workers[task.id], cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) } } }));
     }
     completed.push({ task, worker, report });
     if (typeof ops.onProgress === "function") {

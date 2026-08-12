@@ -37,7 +37,7 @@ test("builds a focused candidate pool from available models on the parent provid
   ]);
 });
 
-test("asks the orchestrator to select an allowed task model and fixes thinking at medium", async () => {
+test("selects an allowed task model and applies valid issue thinking settings", async () => {
   let assessmentPrompt = "";
   const selection = await selectTaskModel({
     task,
@@ -56,6 +56,15 @@ test("asks the orchestrator to select an allowed task model and fixes thinking a
   assert.match(assessmentPrompt, /Enforce workspace isolation/);
   assert.match(assessmentPrompt, /openai-codex\/gpt-5\.6-luna/);
   assert.match(assessmentPrompt, /Return exactly one model identifier/);
+});
+
+test("uses valid model and thinking labels as launch settings", async () => {
+  const selection = await selectTaskModel({
+    task: { ...task, modelHint: "openai-codex/gpt-5.6-luna", thinkingHint: "high" },
+    candidates,
+    assess: async () => "openai-codex/gpt-5.6-terra",
+  });
+  assert.deepEqual(selection, { model: "openai-codex/gpt-5.6-luna", thinking: "high", source: "issue-label" });
 });
 
 test("fails closed when the orchestrator returns a model outside the allowed pool", async () => {

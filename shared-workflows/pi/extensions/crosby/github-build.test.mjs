@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { issueToBuildTask, renderGitHubBuild, taskIdForIssue } from "./github-build.mjs";
 
-const child = (number, body) => ({ number, identifier: `#${number}`, title: `Task ${number}`, body, labels: { nodes: [{ name: "mode:afk" }] } });
+const child = (number, body, labels = ["mode:afk"]) => ({ number, identifier: `#${number}`, title: `Task ${number}`, body, labels: { nodes: labels.map((name) => ({ name })) } });
 const body = `## Outcome\nImplement the adapter.\n\n## Acceptance Criteria\n- Parse issues\n- Validate remotes\n\n## File Scope\n- shared-workflows/pi/extensions/crosby/**\n\n## Verification\n- node --test test.mjs\n\n## Guardrails\n- Do not bypass scope validation.`;
 
 test("maps GitHub issue numbers to stable local task IDs", () => {
   assert.equal(taskIdForIssue({ number: 17 }), "task-017");
   assert.equal(issueToBuildTask(child(17, body), 0).id, "task-017");
   assert.equal(issueToBuildTask(child(17, body), 0).tabLabel, "Task #17");
+  const routed = issueToBuildTask(child(17, body, ["mode:afk", "model:openai-codex/gpt-5.6-luna", "thinking:high"]), 0);
+  assert.equal(routed.modelHint, "openai-codex/gpt-5.6-luna");
+  assert.equal(routed.thinkingHint, "high");
 });
 
 test("renders a valid local build contract from a GitHub queue", () => {
@@ -53,6 +56,13 @@ Confirm the full suite passes.
   assert.deepEqual(task.scope, ["src/adapter.mjs", "test/adapter.test.mjs"]);
   assert.deepEqual(task.verification, ["node --test test/adapter.test.mjs"]);
   assert.match(task.guardrails, /Preserve repository validation\.[\s\S]*Do not bypass scope checks\.[\s\S]*Do not touch:[\s\S]*migrations\/\*\*[\s\S]*Verification notes:[\s\S]*Confirm the full suite passes\./);
+});
+
+test("allows HITL children without repository file scope", () => {
+  const hitl = child(30, "## Outcome\nRun staging acceptance.\n\n## Acceptance Criteria\n- Confirm the operator checklist.\n\n## File Scope\nThis is a manual acceptance task.\n\n## Verification\nFollow the runbook.\n\n## Guardrails\nDo not use production data.", ["mode:hitl", "status:review"]);
+  const task = issueToBuildTask(hitl, 0);
+  assert.equal(task.mode, "HITL");
+  assert.deepEqual(task.scope, []);
 });
 
 test("fails closed when a child issue omits execution contract sections", () => {
