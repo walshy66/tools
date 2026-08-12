@@ -17,11 +17,18 @@
       "design-reviewer": "shared-workflows/portable/skills/design-reviewer/SKILL.md",
       "design": "shared-workflows/portable/skills/design/SKILL.md",
       "handover": "shared-workflows/portable/skills/handover/SKILL.md",
+      "handover-idea": "shared-workflows/portable/skills/handover-idea/SKILL.md",
       "implement": "shared-workflows/portable/skills/implement/SKILL.md",
       "ralph-loop": "shared-workflows/portable/skills/ralph-loop/SKILL.md",
       "plan": "shared-workflows/portable/skills/plan/SKILL.md",
       "specify": "shared-workflows/portable/skills/specify/SKILL.md",
-      "tasks": "shared-workflows/portable/skills/tasks/SKILL.md"
+      "tasks": "shared-workflows/portable/skills/tasks/SKILL.md",
+      "wayfinder": "shared-workflows/portable/skills/wayfinder/SKILL.md",
+      "prototype": "shared-workflows/portable/skills/prototype/SKILL.md",
+      "research": "shared-workflows/portable/skills/research/SKILL.md",
+      "domain-modeling": "shared-workflows/portable/skills/domain-modeling/SKILL.md",
+      "setup-matt-pocock-skills": "shared-workflows/portable/skills/setup-matt-pocock-skills/SKILL.md",
+      "grilling": "shared-workflows/portable/skills/grilling/SKILL.md"
     },
     "agents": {},
     "templates": {

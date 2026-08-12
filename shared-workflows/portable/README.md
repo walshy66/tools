@@ -14,13 +14,19 @@ Canonical, model-agnostic skills shared across tools and projects.
 - `code-reviewer`
 - `design-reviewer`
 - `design`
+- `domain-modeling`
+- `grilling`
 - `handover`
 - `handover-idea`
 - `implement`
+- `prototype`
 - `ralph-loop`
+- `research`
 - `plan`
+- `setup-matt-pocock-skills`
 - `specify`
 - `tasks`
+- `wayfinder`
 
 ## Conventions
 
