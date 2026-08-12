@@ -109,3 +109,15 @@ If more than one workflow seems relevant, choose the smallest skill needed for t
 ## Scoped Repository Pattern
 This repo scopes changes to shared workflow assets and their supporting runtime adapters.
 Avoid adding project-specific workflow logic here unless it is intended to become canonical and portable.
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues for this shared workflow repository are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This repo uses single-context domain docs: root `CONTEXT.md` plus `docs/adr/` when domain terms or decisions are recorded. See `docs/agents/domain.md`.
+
