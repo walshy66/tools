@@ -98,7 +98,23 @@ export function issueToBuildTask(issue, order) {
   if (!criteria.length) throw new Error(`${issue.identifier} is missing Acceptance Criteria.`);
   if (mode === "AFK" && !scope.length) throw new Error(`${issue.identifier} is missing File Scope.`);
   if (mode === "AFK" && !verification.length) throw new Error(`${issue.identifier} is missing Verification.`);
-  return { id: taskIdForIssue(issue), title: issue.title, outcome, criteria, scope, verification, guardrails, mode, modelHint, thinkingHint, sourceState: issue.state?.name ?? null, tabLabel: `Task #${issue.number}`, order };
+  return {
+    id: taskIdForIssue(issue),
+    title: issue.title,
+    outcome,
+    criteria,
+    scope,
+    verification,
+    guardrails,
+    mode,
+    modelHint,
+    thinkingHint,
+    sourceState: issue.state?.name ?? null,
+    tabLabel: issue.standaloneParentTask ? `Parent #${issue.number}` : `Task #${issue.number}`,
+    standaloneParentTask: issue.standaloneParentTask === true,
+    sourceIssue: issue.parentIdentifier ?? issue.identifier,
+    order,
+  };
 }
 
 export function renderGitHubBuild(queue) {
@@ -107,7 +123,7 @@ export function renderGitHubBuild(queue) {
   const tasks = queue.children.map(issueToBuildTask);
   const lines = [`# Build: github-${queue.parent.number}`, ``, `**Parent branch**: \`${parentBranch}\``, `**Execution**: sequential, list order`, ``];
   for (const task of tasks) {
-    lines.push(`## ${task.id} — ${task.title}`, ``, `**Dependencies**: ${task.order === 0 ? "none" : `task-${String(queue.children[task.order - 1].number).padStart(3, "0")}`}`, ``, `**Outcome**: ${task.outcome}`, `**Execution mode**: ${task.mode}`, ...(task.sourceState ? [`**Source state**: ${task.sourceState}`] : []), ...(task.modelHint ? [`**Model**: ${task.modelHint}`] : []), ...(task.thinkingHint ? [`**Thinking**: ${task.thinkingHint}`] : []), ``, `### Acceptance criteria`, ...task.criteria.map((item) => `- ${item}`), ``, `### Crosby execution`, ``, `- Parallel: sequential`, `- File scope:`, ...task.scope.map((item) => `  - \`${item}\``), `- Verification:`, ...(task.verification.length ? task.verification.map((item) => `  - \`${item}\``) : ["  - none"]), ``, `### Guardrails`, ``, task.guardrails, ``, `### Instructions`, ``, task.outcome, ``);
+    lines.push(`## ${task.id} — ${task.title}`, ``, `**Dependencies**: ${task.order === 0 ? "none" : `task-${String(queue.children[task.order - 1].number).padStart(3, "0")}`}`, ``, `**Outcome**: ${task.outcome}`, `**Execution mode**: ${task.mode}`, ...(task.sourceState ? [`**Source state**: ${task.sourceState}`] : []), ...(task.sourceIssue ? [`**Source issue**: ${task.sourceIssue}`] : []), ...(task.standaloneParentTask ? [`**Standalone parent task**: yes`] : []), ...(task.modelHint ? [`**Model**: ${task.modelHint}`] : []), ...(task.thinkingHint ? [`**Thinking**: ${task.thinkingHint}`] : []), ``, `### Acceptance criteria`, ...task.criteria.map((item) => `- ${item}`), ``, `### Crosby execution`, ``, `- Parallel: sequential`, `- File scope:`, ...task.scope.map((item) => `  - \`${item}\``), `- Verification:`, ...(task.verification.length ? task.verification.map((item) => `  - \`${item}\``) : ["  - none"]), ``, `### Guardrails`, ``, task.guardrails, ``, `### Instructions`, ``, task.outcome, ``);
   }
   return lines.join("\n");
 }

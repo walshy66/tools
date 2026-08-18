@@ -578,6 +578,25 @@ function parseGitHubIssueInvocation(args: string) {
   return null;
 }
 
+function issueNumberForTask(task: any) {
+  if (task?.sourceIssue) return String(task.sourceIssue).match(/\d+/)?.[0] ?? String(task.sourceIssue);
+  return String(task?.id ?? "").replace(/^task-0*/, "");
+}
+
+function isStandaloneParentTask(task: any, queue: any) {
+  if (task?.standaloneParentTask === true) return true;
+  const issueNumber = issueNumberForTask(task);
+  return queue?.standaloneParentTask === true
+    && queue?.children?.some((child: any) => child?.standaloneParentTask === true && String(child?.number) === issueNumber);
+}
+
+function queueWithStandaloneTaskState(queue: any, stateName: string) {
+  if (!queue?.standaloneParentTask) return queue;
+  const state = stateName === "Done" ? { name: "Done", type: "completed" } : { name: stateName, type: "started" };
+  const children = (queue.children ?? []).map((child: any) => child?.standaloneParentTask ? { ...child, state } : child);
+  return { ...queue, parent: { ...queue.parent, children }, children };
+}
+
 export default function crosbyExtension(pi: ExtensionAPI) {
   pi.registerEntryRenderer("crosby-build-progress", (entry: any, _options: any, theme: any) => (
     new Text(theme.fg("accent", formatBuildProgress(entry.data)), 0, 0)
@@ -716,23 +735,23 @@ export default function crosbyExtension(pi: ExtensionAPI) {
                 await githubClient.moveIssue(githubQueue.parent.identifier, "Building");
                 parentClaimed = true;
               }
-              const issueNumber = task.id.replace(/^task-0*/, "");
-              await githubClient.moveIssue(issueNumber, "Building");
-              const active = activeDashboardController?.dashboard?.tasks?.find((entry: any) => entry.issueKey === `#${issueNumber}`);
+              const issueNumber = issueNumberForTask(task);
+              if (!isStandaloneParentTask(task, githubQueue)) await githubClient.moveIssue(issueNumber, "Building");
+              const active = activeDashboardController?.dashboard?.tasks?.find((entry: any) => entry.issueKey === `#${issueNumber}` || entry.taskId === task.id);
               if (active) activeDashboardController.executionStarted({ child: { identifier: `#${issueNumber}`, title: task.title }, parent: activeGitHubQueue?.parent });
             }
           },
           onTaskIntegrated: async ({ task, report }: any) => {
-            const issueNumber = task.id.replace(/^task-0*/, "");
+            const issueNumber = issueNumberForTask(task);
             dashboardController?.executionFinished({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
             dashboardController?.executionFinalized({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: report.outcome ?? "complete" } });
             if (githubClient) {
-              await githubClient.moveIssue(issueNumber, "Done");
+              if (!isStandaloneParentTask(task, githubQueue)) await githubClient.moveIssue(issueNumber, "Done");
               await githubClient.addComment(issueNumber, buildGitHubChildProgress({ child: { identifier: `#${issueNumber}` }, outcome: report.outcome, summary: report.summary, changes: report.changes?.paths ?? [report.changes?.commit ?? "recorded in the durable worktree"], verification: report.verification?.map((entry: any) => `${entry.command}: ${entry.result}`), recoveryNotes: report.risks }));
             }
           },
           onTaskReview: async ({ task, report }: any) => {
-            const issueNumber = task.id.replace(/^task-0*/, "");
+            const issueNumber = issueNumberForTask(task);
             dashboardController?.executionFinished({ child: { identifier: `#${issueNumber}`, title: task.title }, workerResult: { outcome: "review", requiredHumanAction: report.requiredHumanAction, recoveryNotes: report.recoveryNotes } });
             if (githubClient) {
               await githubClient.moveIssue(issueNumber, "Review");
@@ -793,7 +812,11 @@ export default function crosbyExtension(pi: ExtensionAPI) {
           }
         }
         if (githubClient && githubQueue) {
-          const refreshed = await githubClient.loadParentQueue(githubQueue.parent.identifier);
+          const refreshedRaw = await githubClient.loadParentQueue(githubQueue.parent.identifier);
+          const completedTaskIds = new Set((result?.completed ?? []).map((entry: any) => entry?.task?.id));
+          const refreshed = refreshedRaw.standaloneParentTask && refreshedRaw.children.some((child: any) => completedTaskIds.has(`task-${String(child.number).padStart(3, "0")}`))
+            ? queueWithStandaloneTaskState(refreshedRaw, "Done")
+            : refreshedRaw;
           if (refreshed.children.every((child: any) => child.state.name === "Done")) {
             await githubClient.addComment(refreshed.parent.identifier, buildGitHubParentSummary({ parent: refreshed.parent, children: refreshed.children.filter((child: any) => child.state.name === "Done") }));
             await githubClient.moveIssue(refreshed.parent.identifier, "Review");

@@ -4,6 +4,8 @@ import {
   normalizeRepositoryUrl,
   parseChildIssueRefs,
   repositoryFromIssueUrl,
+  isStandaloneParentCandidate,
+  syntheticStandaloneChildForParent,
   toCrosbyIssue,
 } from "./github-source.mjs";
 
@@ -55,7 +57,11 @@ export function createGitHubClient({ exec, repository } = {}) {
     const parent = await loadIssue(issueRef);
     if (parent.parent) fail(`${parent.identifier} is a child issue; run Crosby with its parent issue.`);
     const children = executableChildren(parent.children ?? []);
-    if (!children.length) fail(`${parent.identifier} has no executable child issues in its Child Issues section.`);
+    if (!children.length) {
+      if (!isStandaloneParentCandidate(parent)) fail(`${parent.identifier} has no executable child issues in its Child Issues section.`);
+      const syntheticChild = syntheticStandaloneChildForParent(parent);
+      return { parent: { ...parent, children: [syntheticChild], standaloneParentTask: true }, children: [syntheticChild], standaloneParentTask: true };
+    }
     return { parent: { ...parent, children }, children };
   }
 

@@ -110,6 +110,8 @@ function parseTask(block, index) {
     modelHint: metadata(block, "Model") || metadata(block, "Model hint") || null,
     thinkingHint: metadata(block, "Thinking") || metadata(block, "Thinking hint") || null,
     sourceState: metadata(block, "Source state") || null,
+    sourceIssue: metadata(block, "Source issue") || null,
+    standaloneParentTask: /^yes$/i.test(metadata(block, "Standalone parent task")),
     order: index,
   };
 }
