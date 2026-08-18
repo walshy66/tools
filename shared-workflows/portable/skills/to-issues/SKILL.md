@@ -91,7 +91,9 @@ Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that 
 
 Only after explicit user approval, create the approved issues in GitHub as child issues linked to the originating parent issue.
 
-Use `gh issue create` for each child. Each created child should include:
+Use `gh issue create` for each child, then link every created child to the parent with GitHub's native sub-issue API. The `type:child` label must still be applied; it is execution metadata, not a substitute for the native sub-issue relationship.
+
+Each created child should include:
 
 - `Parent: #<parent-number>` in the body.
 - Scope and acceptance criteria.
@@ -109,14 +111,26 @@ Use `gh issue create` for each child. Each created child should include:
 Example:
 
 ```bash
-gh issue create \
+child_url=$(gh issue create \
   --title "Add backend validation" \
   --body "Parent: #122\n\n## Scope\n...\n\n## Expected Files\n- backend/app/validation.py\n- backend/app/tests/test_validation.py\n\n## Do Not Touch\n- frontend/\n- migrations/\n\n## Crosby Locks\n- backend/app/validation.py\n\n## Test Command\npytest backend/app/tests/test_validation.py\n\n## Acceptance Criteria\n- [ ] ..." \
   --label "type:child,status:ready-to-build,mode:afk,wt:development,model:openai-codex/gpt-5.6-luna,thinking:low" \
-  --milestone "my-feature"
+  --milestone "my-feature")
+child_number="${child_url##*/}"
+child_id=$(gh api repos/OWNER/REPO/issues/$child_number --jq .id)
+gh api -X POST repos/OWNER/REPO/issues/122/sub_issues -F sub_issue_id="$child_id"
 ```
 
+Important: use `-F sub_issue_id=...` for the sub-issue API so `gh` sends the ID as an integer. `-f` sends a string and GitHub rejects it.
+
 After creating the children:
+
+- Link every child as a native GitHub sub-issue of the parent:
+
+  ```bash
+  child_id=$(gh api repos/OWNER/REPO/issues/CHILD_NUMBER --jq .id)
+  gh api -X POST repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues -F sub_issue_id="$child_id"
+  ```
 
 - Add or update a parent comment containing the child issue list in dependency order.
 - Use `scripts/bootstrap-github-labels.sh` before creating issues when required labels are absent; label creation/update must be idempotent.
@@ -131,9 +145,15 @@ After creating the children:
   ```
 
 - Do not create a new parent issue.
-- Verify each child has the correct parent reference, milestone, labels, and initial status label.
+- Verify each child has the correct native sub-issue relationship, parent reference, milestone, labels, and initial status label. Prefer verifying the parent relationship with:
+
+  ```bash
+  gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues --jq '.[].number'
+  ```
+
+- If verification shows a child was not linked as a native sub-issue, link it immediately with the sub-issue API before reporting completion.
 - If verification shows inherited labels were missed, add the missing labels; never remove existing labels unless the user explicitly requested removal.
-- Report the created issue numbers, URLs, inherited milestone, inherited labels, mode labels, and initial status labels back to the user.
+- Report the created issue numbers, URLs, native sub-issue verification, inherited milestone, inherited labels, mode labels, and initial status labels back to the user.
 
 ## Output Format
 
@@ -162,6 +182,7 @@ After approval and creation, also report:
 - Created child inherited labels
 - Created child mode labels (`mode:afk` or `mode:hitl`)
 - Created child initial status labels
+- Native GitHub sub-issue verification result
 
 ## Quality Checks
 
@@ -174,9 +195,10 @@ After approval and creation, also report:
 - Are `model:*` and `thinking:*` labels valid, justified, and based on available Pi configuration?
 - Are the local planning artifacts still aligned with the approved issue breakdown?
 - Has explicit user approval been captured before GitHub issue creation?
+- Will every created child be linked through GitHub's native sub-issue API, not only by body text/checklist?
 - Will every created child inherit the parent milestone and relevant labels?
-- Will every created child receive the correct additive `mode:*` and `status:*` labels without replacing inherited labels?
-- Was inheritance and type/status/mode assignment verified after creation?
+- Will every created child receive the correct additive `type:child`, `mode:*`, and `status:*` labels without replacing inherited labels?
+- Was native sub-issue linkage, inheritance, and type/status/mode assignment verified after creation?
 
 ## Troubleshooting
 
@@ -206,6 +228,17 @@ After approval and creation, also report:
   - AFK → `type:child`, `mode:afk`, `status:ready-to-build`
   - HITL → `type:child`, `mode:hitl`, `status:ready` or `status:review`
 - Do not leave typed execution issues without a clear status label.
+
+**Created issues are not native GitHub sub-issues**
+- Link each created issue to the parent with the native sub-issue API:
+
+  ```bash
+  child_id=$(gh api repos/OWNER/REPO/issues/CHILD_NUMBER --jq .id)
+  gh api -X POST repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues -F sub_issue_id="$child_id"
+  ```
+
+- Verify with `gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues --jq '.[].number'` before reporting completion.
+- Keep the `type:child` label and `Parent: #<parent>` body line; they are useful execution metadata/fallbacks but do not replace native linkage.
 
 **Created issues did not inherit the parent milestone or labels**
 - Immediately correct the child issues so they match the parent milestone and relevant labels.
