@@ -149,3 +149,36 @@ export function editLabelArguments(issueRef, state) {
 export function isAutomatedIssue(issue) {
   return issueLabels(issue).some((label) => label.toLowerCase() === "mode:afk");
 }
+
+export function hasIssueLabel(issue, labelName) {
+  const expected = text(labelName).toLowerCase();
+  return issueLabels(issue).some((label) => label.toLowerCase() === expected);
+}
+
+export function isStandaloneParentCandidate(issue) {
+  if (!hasIssueLabel(issue, "type:parent") || !hasIssueLabel(issue, "mode:afk")) return false;
+  if (Array.isArray(issue?.children) && issue.children.length > 0) return false;
+  const status = statusFromIssue(issue);
+  return ["Execute", "Ready to Build", "Building", "Review", "Done"].includes(status);
+}
+
+export function syntheticStandaloneChildForParent(parent) {
+  const number = issueNumber(parent);
+  const state = ["Review", "Done"].includes(statusFromIssue(parent))
+    ? { name: "Done", type: "completed" }
+    : { name: "Ready to Build", type: "unstarted" };
+  return {
+    ...parent,
+    identifier: number ? `task-${number}` : `task-${text(parent?.identifier).replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "")}`,
+    number,
+    title: text(parent?.title),
+    description: parent?.description ?? parent?.body,
+    body: parent?.body ?? parent?.description,
+    branchName: parent?.branchName,
+    state,
+    parent: undefined,
+    children: [],
+    standaloneParentTask: true,
+    parentIdentifier: issueIdentifier(parent),
+  };
+}

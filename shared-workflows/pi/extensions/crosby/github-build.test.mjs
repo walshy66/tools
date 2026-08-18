@@ -58,6 +58,18 @@ Confirm the full suite passes.
   assert.match(task.guardrails, /Preserve repository validation\.[\s\S]*Do not bypass scope checks\.[\s\S]*Do not touch:[\s\S]*migrations\/\*\*[\s\S]*Verification notes:[\s\S]*Confirm the full suite passes\./);
 });
 
+test("renders standalone parent tasks without changing the required task contract", () => {
+  const parentTask = { ...child(123, body, ["type:parent", "mode:afk", "status:execute"]), standaloneParentTask: true, parentIdentifier: "#123" };
+  const task = issueToBuildTask(parentTask, 0);
+  assert.equal(task.id, "task-123");
+  assert.equal(task.standaloneParentTask, true);
+  assert.equal(task.sourceIssue, "#123");
+  assert.equal(task.tabLabel, "Parent #123");
+  const markdown = renderGitHubBuild({ parent: { number: 123, branchName: "issue-123-one-slice" }, children: [parentTask] });
+  assert.match(markdown, /\*\*Standalone parent task\*\*: yes/);
+  assert.match(markdown, /\*\*Source issue\*\*: #123/);
+});
+
 test("allows HITL children without repository file scope", () => {
   const hitl = child(30, "## Outcome\nRun staging acceptance.\n\n## Acceptance Criteria\n- Confirm the operator checklist.\n\n## File Scope\nThis is a manual acceptance task.\n\n## Verification\nFollow the runbook.\n\n## Guardrails\nDo not use production data.", ["mode:hitl", "status:review"]);
   const task = issueToBuildTask(hitl, 0);

@@ -9,6 +9,7 @@ import {
   parseParentIssueRef,
   repositoryFromIssueUrl,
   statusFromIssue,
+  syntheticStandaloneChildForParent,
   toCrosbyIssue,
 } from "./github-source.mjs";
 
@@ -41,4 +42,13 @@ test("maps GitHub states and label transitions", () => {
 
 test("derives a safe branch name when no branch metadata exists", () => {
   assert.equal(deriveBranchName({ number: 14, title: "GitHub Crosby integration" }), "issue-14-github-crosby-integration");
+});
+
+test("synthesizes a standalone executable child from an eligible parent", () => {
+  const parent = toCrosbyIssue({ number: 123, title: "One slice", body: "## Outcome\nDo it.", state: "OPEN", labels: ["type:parent", "mode:afk", "status:execute"] });
+  const child = syntheticStandaloneChildForParent(parent);
+  assert.equal(child.identifier, "task-123");
+  assert.equal(child.parentIdentifier, "#123");
+  assert.equal(child.standaloneParentTask, true);
+  assert.equal(child.state.name, "Ready to Build");
 });
