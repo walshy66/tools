@@ -175,6 +175,28 @@ test("watch mode reprints when the events file gains new appended lines", async 
   assert.ok(writes.length >= 2, `expected at least 2 writes, got ${writes.length}`);
 });
 
+test("a running dashboard follows its binding to a new run even when log sizes match", async (t) => {
+  const runsRoot = makeTempRunsRoot();
+  t.after(() => fs.rmSync(runsRoot, { recursive: true, force: true }));
+  for (const id of ["one", "two"]) {
+    persistDashboardEvent(createCrosbyDashboard(
+      { parent: { identifier: "#129", title: id }, children: [] },
+      { runId: id, now: () => "2026-08-02T00:00:00.000Z" },
+    ), { runsRoot });
+  }
+  const runFile = path.join(runsRoot, "binding.json");
+  fs.writeFileSync(runFile, JSON.stringify({ runId: "one" }));
+  const writes = [];
+  const result = await runDashboardRunner(["--run-file", runFile], {
+    runsRoot, intervalMs: 5, write: (text) => writes.push(text),
+  });
+  t.after(() => result.stop?.());
+  assert.match(writes.at(-1), /Crosby #129: one/);
+  fs.writeFileSync(runFile, JSON.stringify({ runId: "two" }));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.match(writes.at(-1), /Crosby #129: two/);
+});
+
 test("runDashboardRunner reports when no Crosby run exists", async () => {
   const runsRoot = makeTempRunsRoot();
   const writes = [];

@@ -99,6 +99,20 @@ export function createHerdrClient({ invoke, platform = process.platform } = {}) 
       };
     },
 
+    async createVerifierPane({ pane, cwd, env = {} } = {}) {
+      const environment = Object.fromEntries(Object.entries(env).map(([key, value]) => {
+        if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || typeof value !== 'string' || !value || /[\r\n\0]/.test(value)) fail('Invalid verifier environment.');
+        return [key, value];
+      }));
+      const source = text(pane, 'source pane');
+      const layout = object(await call('paneLayout', { pane: source }), 'paneLayout');
+      const rect = layout.panes?.find((entry) => entry.pane_id === source)?.rect;
+      if (!rect?.width || !rect?.height) fail('Cannot determine source pane geometry for verifier split.');
+      const direction = rect.width >= rect.height * 2 ? 'right' : 'down';
+      const response = object(await call('splitPane', { pane: source, direction, cwd: text(cwd, 'cwd'), focus: false, env: environment }), 'splitPane');
+      return { pane: text(response.pane, 'verifier pane'), tab: text(response.tab, 'verifier tab') };
+    },
+
     async closeTaskTab({ tab } = {}) {
       const response = object(await call("closeTab", { tab: text(tab, "tab") }), "closeTab");
       return { tab: text(response.tab, "Herdr closeTab response tab") };
@@ -152,7 +166,18 @@ export function createHerdrClient({ invoke, platform = process.platform } = {}) 
         prompt: text(prompt, "prompt"),
         wait: wait === true,
       });
-      return responseWithState(response, "promptAgent");
+      const submitted = responseWithState(response, 'promptAgent');
+      if (platform !== 'win32' || wait || submitted.state === 'working') return submitted;
+      try {
+        return responseWithState(await call('waitForAgent', { agent, until: ['working'], timeout: 5000 }), 'prompt acknowledgement');
+      } catch {
+        const current = responseWithState(await call('inspectAgent', { agent }), 'inspectAgent');
+        if (!['idle', 'done'].includes(current.state)) fail('Prompt was not acknowledged; inspect the retained agent before retrying.');
+        // Windows startup can paste into the editor before Enter is accepted. Submit
+        // that existing buffer once, never retransmit the prompt or start a second agent.
+        await call('sendAgentKeys', { agent, keys: ['enter'] });
+        return responseWithState(await call('waitForAgent', { agent, until: ['working'], timeout: 5000 }), 'prompt acknowledgement');
+      }
     },
 
     async waitForAgent({ agent, until, timeout } = {}) {

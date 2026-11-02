@@ -80,11 +80,73 @@ test("uses the outcome as worker instructions when an explicit Instructions sect
   assert.equal(result.tasks[0].executionMode, "HITL");
 });
 
-test("rejects a task that depends on a later task", () => {
-  assert.throws(
-    () => parseBuildTaskList(`# Build: 001-invalid\n\n**Parent branch**: \`crosby/001-invalid\`\n\n## task-001 — First\n\n**Dependencies**: task-002\n**Outcome**: First\n\n### Acceptance criteria\n- First\n\n### Crosby execution\n- Parallel: sequential\n- File scope:\n  - \`src/first.mjs\`\n- Verification:\n  - \`node --test first\`\n\n### Instructions\nDo first.\n\n### Guardrails\nStay scoped.\n\n## task-002 — Second\n\n**Dependencies**: none\n**Outcome**: Second\n\n### Acceptance criteria\n- Second\n\n### Crosby execution\n- Parallel: sequential\n- File scope:\n  - \`src/second.mjs\`\n- Verification:\n  - \`node --test second\`\n\n### Instructions\nDo second.\n\n### Guardrails\nStay scoped.`),
-    /must appear earlier/,
-  );
+test("orders forward references before dependent tasks", () => {
+  const result = parseBuildTaskList(`# Build: 001-invalid\n\n**Parent branch**: \`crosby/001-invalid\`\n\n## task-001 — First\n\n**Dependencies**: task-002\n**Outcome**: First\n\n### Acceptance criteria\n- First\n\n### Crosby execution\n- Parallel: sequential\n- File scope:\n  - \`src/first.mjs\`\n- Verification:\n  - \`node --test first\`\n\n### Instructions\nDo first.\n\n### Guardrails\nStay scoped.\n\n## task-002 — Second\n\n**Dependencies**: none\n**Outcome**: Second\n\n### Acceptance criteria\n- Second\n\n### Crosby execution\n- Parallel: sequential\n- File scope:\n  - \`src/second.mjs\`\n- Verification:\n  - \`node --test second\`\n\n### Instructions\nDo second.\n\n### Guardrails\nStay scoped.`);
+  assert.deepEqual(result.tasks.map(task => task.id), ["task-002", "task-001"]);
+});
+
+test("authored task lists localize dependency errors without blocking unrelated contracts", () => {
+  const task = (id, deps) => `## ${id} — Review
+**Dependencies**: ${deps}
+**Outcome**: Review the result.
+**Execution mode**: HITL
+### Acceptance criteria
+- AC-01: Reviewed
+### Crosby execution
+- Parallel: sequential
+### Review Context
+AGENTS.md
+### Browser Acceptance
+Browser testing: not applicable
+Reason: CLI-only change.
+### Guardrails
+Stay scoped.
+`;
+  const parse = (first, second = "none") => parseBuildTaskList(`# Build: test\n**Parent branch**: test\n${task("task-001", first)}\n${task("task-002", second)}\n${task("task-003", "none")}`);
+  for (const deps of ["", "draft-A", "task-999", "task-001", "none, task-002"]) {
+    const build = parse(deps);
+    assert.match(build.tasks.find(t => t.id === "task-001").contractError, /dependenc/i);
+    assert.equal(build.tasks.find(t => t.id === "task-003").contractError, "");
+  }
+  const cycle = parse("task-002", "task-001");
+  assert.ok(cycle.tasks.filter(t => t.id !== "task-003").every(t => /cycle/i.test(t.contractError)));
+  assert.equal(cycle.tasks.find(t => t.id === "task-003").contractError, "");
+});
+
+test("exposes all parent acceptance criteria to the parent verifier without mixing child criteria", () => {
+  const prefix = `# Build: github-14
+**Parent branch**: parent
+`;
+  const parent = `## Parent Acceptance Criteria
+- AC-01: Combined success journey (US-01).
+- [ ] AC-02: Combined failure journey (US-02).
+## Parent Review Context
+AGENTS.md; AC-01 and AC-02 require integration coverage.
+## Parent Browser Acceptance
+Browser testing: not applicable
+Reason: CLI-only library.
+`;
+  const child = `## task-017 — Child
+**Dependencies**: none
+**Outcome**: Implement the child.
+**Execution mode**: HITL
+### Acceptance criteria
+- AC-99: Child-only requirement.
+### Crosby execution
+- Parallel: sequential
+### Guardrails
+Stay scoped.
+`;
+  const build = parseBuildTaskList(prefix + parent + child);
+  assert.deepEqual(build.parentAcceptanceCriteria, [
+    "AC-01: Combined success journey (US-01).",
+    "[ ] AC-02: Combined failure journey (US-02).",
+  ]);
+  assert.equal(build.contractError, "");
+  const legacy = parseBuildTaskList(prefix + child);
+  assert.deepEqual(legacy.parentAcceptanceCriteria, []);
+  assert.match(legacy.contractError, /Review Context/);
+  assert.match(legacy.contractError, /Browser Acceptance/);
 });
 
 test("rejects absolute file-scope paths", () => {

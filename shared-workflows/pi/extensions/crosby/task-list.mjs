@@ -1,3 +1,5 @@
+import { reviewContract, parseDependencies, orderDependencyGraph, contractSection } from "./browser-contract.mjs";
+
 export class TaskListError extends Error {
   constructor(message) {
     super(`${message} Recovery: fix the build tasks.md input and rerun Crosby.`);
@@ -41,15 +43,6 @@ function listItems(text) {
     .map(unquote);
 }
 
-function dependencies(taskText, taskId) {
-  const value = metadata(taskText, "Dependencies");
-  if (!value) fail(`${taskId} is missing Dependencies.`);
-  if (/^none$/i.test(value)) return [];
-  const result = value.split(",").map((item) => required(item, `${taskId} dependency`));
-  if (result.some((item) => !/^task-\d+$/i.test(item))) fail(`${taskId} has an invalid dependency ID.`);
-  return result;
-}
-
 function fileScope(taskText, taskId) {
   const execution = section(taskText, "Crosby execution");
   const scopeStart = execution.match(/^\s*-\s*File scope:\s*$/im);
@@ -83,8 +76,9 @@ function parseTask(block, index) {
   if (!heading) fail(`Task ${index + 1} has an invalid heading; expected '## task-NNN — title'.`);
   const id = heading[1];
   const title = required(heading[2], `${id} title`);
-  const outcome = required(metadata(block, "Outcome"), `${id} Outcome`);
-  const executionMode = (metadata(block, "Execution mode") || "AFK").toUpperCase();
+  const header = block.split(/^### /m)[0];
+  const outcome = required(metadata(header, "Outcome"), `${id} Outcome`);
+  const executionMode = (metadata(header, "Execution mode") || "AFK").toUpperCase();
   if (executionMode !== "AFK" && executionMode !== "HITL") fail(`${id} Execution mode must be AFK or HITL.`);
   const acceptanceCriteria = listItems(section(block, "Acceptance criteria"));
   if (!acceptanceCriteria.length) fail(`${id} must declare acceptance criteria.`);
@@ -95,10 +89,15 @@ function parseTask(block, index) {
   const instructions = section(block, "Instructions") || outcome;
   const guardrails = section(block, "Guardrails");
   if (!guardrails) fail(`${id} must declare Guardrails.`);
+  const contract = reviewContract(block, acceptanceCriteria, 3);
+  const deps = parseDependencies(metadata(header, "Dependencies"));
   return {
+    ...contract,
+    contractError: [...new Set([contract.contractError, deps.contractError, metadata(header, "Contract error")].filter(Boolean))].join(" "),
+    tabLabel: metadata(header, "Tab label") || null,
     id,
     title,
-    dependencies: dependencies(block, id),
+    dependencies: deps.dependencies,
     outcome,
     executionMode,
     acceptanceCriteria,
@@ -107,11 +106,11 @@ function parseTask(block, index) {
     verification: executionMode === "HITL" ? [] : verification(block, id),
     instructions,
     guardrails,
-    modelHint: metadata(block, "Model") || metadata(block, "Model hint") || null,
-    thinkingHint: metadata(block, "Thinking") || metadata(block, "Thinking hint") || null,
-    sourceState: metadata(block, "Source state") || null,
-    sourceIssue: metadata(block, "Source issue") || null,
-    standaloneParentTask: /^yes$/i.test(metadata(block, "Standalone parent task")),
+    modelHint: metadata(header, "Model") || metadata(header, "Model hint") || null,
+    thinkingHint: metadata(header, "Thinking") || metadata(header, "Thinking hint") || null,
+    sourceState: metadata(header, "Source state") || null,
+    sourceIssue: metadata(header, "Source issue") || null,
+    standaloneParentTask: /^yes$/i.test(metadata(header, "Standalone parent task")),
     order: index,
   };
 }
@@ -129,9 +128,14 @@ export function parseBuildTaskList(markdown) {
   for (const task of tasks) {
     if (ids.has(task.id)) fail(`Duplicate task ID '${task.id}'.`);
     ids.add(task.id);
-    for (const dependency of task.dependencies) {
-      if (!ids.has(dependency)) fail(`${task.id} depends on ${dependency}, which must appear earlier in the task list.`);
-    }
   }
-  return { buildId: build[1], parentBranch, tasks };
+  const parentText = source.split(/^##\s+task-\d+\s+—/m)[0].replace(/^## Parent /gm, "## ");
+  const parentContract = reviewContract(parentText, [contractSection(parentText, "Acceptance Criteria")]);
+  return {
+    buildId: build[1], parentBranch, tasks: orderDependencyGraph(tasks),
+    parentAcceptanceCriteria: listItems(contractSection(parentText, "Acceptance Criteria")),
+    parentReviewContext: parentContract.reviewContext,
+    parentBrowserAcceptance: parentContract.browserAcceptance,
+    contractError: parentContract.contractError,
+  };
 }

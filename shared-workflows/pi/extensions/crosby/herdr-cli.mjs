@@ -10,6 +10,10 @@ function argumentsFor(operation, input) {
       return ["api", "snapshot"];
     case "createTab":
       return ["tab", "create", "--workspace", input.workspace, "--label", input.label, "--cwd", input.cwd, ...(input.focus ? ["--focus"] : ["--no-focus"]), ...Object.entries(input.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`])];
+    case 'paneLayout':
+      return ['pane', 'layout', '--pane', input.pane];
+    case "splitPane":
+      return ["pane", "split", "--pane", input.pane, '--direction', input.direction, "--cwd", input.cwd, "--no-focus", ...Object.entries(input.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`])];
     case "focusTab":
       return ["tab", "focus", input.tab];
     case "closeTab":
@@ -27,9 +31,9 @@ function argumentsFor(operation, input) {
     case "renameAgent":
       return ["agent", "rename", input.agent, input.name];
     case "sendAgentKeys":
-      return ["agent", "keys", input.agent, ...input.keys.flatMap((key) => ["--key", key])];
+      return ["agent", "send-keys", input.agent, ...input.keys.map((key) => key.replace(/^ctrl-/, 'ctrl+'))];
     case "stopAgent":
-      return ["agent", "stop", input.agent];
+      return ["agent", "send-keys", input.agent, 'ctrl+c'];
     case "inspectAgent":
       return ["agent", "get", input.agent];
     default:
@@ -66,6 +70,10 @@ export function createHerdrCliInvoker({ exec } = {}) {
           tab: raw.tab_id ?? raw.tab?.tab_id ?? raw.tab,
           pane: raw.pane ?? raw.pane_id ?? raw.root_pane?.pane_id,
         };
+      case 'paneLayout':
+        return raw.layout;
+      case "splitPane":
+        return { pane: raw.pane?.pane_id ?? raw.pane_id, tab: raw.pane?.tab_id ?? raw.tab_id };
       case "focusTab":
         return { tab: raw.tab ?? raw.tab_id ?? input.tab };
       case "closeTab":

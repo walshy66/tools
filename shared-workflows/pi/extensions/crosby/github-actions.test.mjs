@@ -3,6 +3,8 @@ import test from "node:test";
 import { parseGitHubCommand, runGitHubWatch } from "./github-actions.mjs";
 
 test("parses GitHub parent, watch, push, and review commands", () => {
+  assert.deepEqual(parseGitHubCommand("resume #14"), { mode: 'resume', issueRef: '#14' });
+  assert.equal(parseGitHubCommand('resume local-folder'), null);
   assert.deepEqual(parseGitHubCommand("#14"), { mode: "parent", issueRef: "#14" });
   assert.deepEqual(parseGitHubCommand("--watch"), { mode: "watch" });
   assert.deepEqual(parseGitHubCommand("push #14"), { mode: "push", issueRef: "#14" });

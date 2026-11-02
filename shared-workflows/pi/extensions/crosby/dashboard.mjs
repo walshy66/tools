@@ -461,6 +461,15 @@ function renderPrioritizedTasks(tasks) {
   return lines;
 }
 
+export function markDashboardQualityStage(dashboard, event = {}) {
+  if (!dashboard) return dashboard;
+  const message = `${event.taskId ?? 'Parent'} ${event.stage}: ${event.summary}${event.requiredHumanAction ? ` — Assistance: ${event.requiredHumanAction}` : ''}${event.artifactDir ? ` — Evidence: ${event.artifactDir}` : ''}`;
+  if (!event.taskId) dashboard.parentVerification = event;
+  pushLifecycleEvent(dashboard, message, event);
+  touchDashboard(dashboard, event);
+  return dashboard;
+}
+
 export function renderCrosbyDashboard(dashboard) {
   if (!dashboard) return [];
   const total = dashboard.tasks.length;
@@ -489,6 +498,11 @@ export function renderCrosbyDashboard(dashboard) {
     lines.push(`Error: ${dashboard.fatalError}`);
   }
 
+  if (dashboard.parentVerification) {
+    const gate = dashboard.parentVerification;
+    lines.push(`Parent verification: ${gate.stage} — ${gate.summary}`);
+    if (gate.requiredHumanAction) lines.push(`Assistance: ${gate.requiredHumanAction}`);
+  }
   lines.push("", ...renderPrioritizedTasks(dashboard.tasks));
 
   const events = Array.isArray(dashboard.events) ? dashboard.events : [];

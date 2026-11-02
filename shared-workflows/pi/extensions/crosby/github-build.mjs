@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { reviewContract, parseDependencies, orderDependencyGraph } from "./browser-contract.mjs";
 
 function section(body, heading) {
   const match = String(body ?? "").match(new RegExp(`^##\\s+${heading}\\s*\\r?\\n([\\s\\S]*?)(?=^##\\s+|(?![\\s\\S]))`, "im"));
@@ -98,7 +99,12 @@ export function issueToBuildTask(issue, order) {
   if (!criteria.length) throw new Error(`${issue.identifier} is missing Acceptance Criteria.`);
   if (mode === "AFK" && !scope.length) throw new Error(`${issue.identifier} is missing File Scope.`);
   if (mode === "AFK" && !verification.length) throw new Error(`${issue.identifier} is missing Verification.`);
+  const contract = reviewContract(issue.body, criteria);
+  const deps = parseDependencies(section(issue.body, "Dependencies"), true);
   return {
+    ...contract,
+    dependencies: deps.dependencies,
+    contractError: [contract.contractError, deps.contractError].filter(Boolean).join(" "),
     id: taskIdForIssue(issue),
     title: issue.title,
     outcome,
@@ -110,7 +116,7 @@ export function issueToBuildTask(issue, order) {
     modelHint,
     thinkingHint,
     sourceState: issue.state?.name ?? null,
-    tabLabel: issue.standaloneParentTask ? `Parent #${issue.number}` : `Task #${issue.number}`,
+    tabLabel: `Crosby #${issue.number}`,
     standaloneParentTask: issue.standaloneParentTask === true,
     sourceIssue: issue.parentIdentifier ?? issue.identifier,
     order,
@@ -120,10 +126,13 @@ export function issueToBuildTask(issue, order) {
 export function renderGitHubBuild(queue) {
   const parentBranch = queue?.parent?.branchName;
   if (!parentBranch) throw new Error(`GitHub parent ${queue?.parent?.identifier ?? "unknown"} has no branch name.`);
-  const tasks = queue.children.map(issueToBuildTask);
-  const lines = [`# Build: github-${queue.parent.number}`, ``, `**Parent branch**: \`${parentBranch}\``, `**Execution**: sequential, list order`, ``];
+  const tasks = orderDependencyGraph(queue.children.map(issueToBuildTask));
+  const lines = [`# Build: github-${queue.parent.number}`, ``, `**Parent branch**: \`${parentBranch}\``, `**Execution**: sequential, dependency order`, ``];
+  for (const heading of ["Review Context", "Acceptance Criteria", "Browser Acceptance"]) {
+    lines.push(`## Parent ${heading}`, "", section(queue.parent.body, heading), "");
+  }
   for (const task of tasks) {
-    lines.push(`## ${task.id} — ${task.title}`, ``, `**Dependencies**: ${task.order === 0 ? "none" : `task-${String(queue.children[task.order - 1].number).padStart(3, "0")}`}`, ``, `**Outcome**: ${task.outcome}`, `**Execution mode**: ${task.mode}`, ...(task.sourceState ? [`**Source state**: ${task.sourceState}`] : []), ...(task.sourceIssue ? [`**Source issue**: ${task.sourceIssue}`] : []), ...(task.standaloneParentTask ? [`**Standalone parent task**: yes`] : []), ...(task.modelHint ? [`**Model**: ${task.modelHint}`] : []), ...(task.thinkingHint ? [`**Thinking**: ${task.thinkingHint}`] : []), ``, `### Acceptance criteria`, ...task.criteria.map((item) => `- ${item}`), ``, `### Crosby execution`, ``, `- Parallel: sequential`, `- File scope:`, ...task.scope.map((item) => `  - \`${item}\``), `- Verification:`, ...(task.verification.length ? task.verification.map((item) => `  - \`${item}\``) : ["  - none"]), ``, `### Guardrails`, ``, task.guardrails, ``, `### Instructions`, ``, task.outcome, ``);
+    lines.push(`## ${task.id} — ${task.title}`, ``, `**Dependencies**: ${task.dependencies.join(", ") || "none"}`, ``, `**Tab label**: ${task.tabLabel}`, ...(task.contractError ? [`**Contract error**: ${task.contractError}`] : []), `**Outcome**: ${task.outcome}`, `**Execution mode**: ${task.mode}`, ...(task.sourceState ? [`**Source state**: ${task.sourceState}`] : []), ...(task.sourceIssue ? [`**Source issue**: ${task.sourceIssue}`] : []), ...(task.standaloneParentTask ? [`**Standalone parent task**: yes`] : []), ...(task.modelHint ? [`**Model**: ${task.modelHint}`] : []), ...(task.thinkingHint ? [`**Thinking**: ${task.thinkingHint}`] : []), ``, `### Acceptance criteria`, ...task.criteria.map((item) => `- ${item}`), ``, `### Crosby execution`, ``, `- Parallel: sequential`, `- File scope:`, ...task.scope.map((item) => `  - \`${item}\``), `- Verification:`, ...(task.verification.length ? task.verification.map((item) => `  - \`${item}\``) : ["  - none"]), ``, `### Review Context`, ``, task.reviewContext.replace(/^###/gm, "####"), ``, `### Browser Acceptance`, ``, task.browserAcceptance.text.replace(/^###/gm, "####"), ``, `### Guardrails`, ``, task.guardrails, ``, `### Instructions`, ``, task.outcome, ``);
   }
   return lines.join("\n");
 }

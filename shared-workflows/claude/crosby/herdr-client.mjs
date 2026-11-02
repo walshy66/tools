@@ -1,0 +1,233 @@
+const AGENT_STATES = new Set(["working", "idle", "blocked", "done", "unknown"]);
+
+export class HerdrClientError extends Error {
+  constructor(message) {
+    super(`${message} Recovery: verify Herdr is running and retry the worker operation; inspect the Herdr tab manually if the problem persists.`);
+    this.name = "HerdrClientError";
+  }
+}
+
+function fail(message) {
+  throw new HerdrClientError(message);
+}
+
+function text(value, name) {
+  const result = String(value ?? "").trim();
+  if (!result) fail(`${name} must be a non-empty string.`);
+  return result;
+}
+
+function object(value, operation) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(`Herdr ${operation} returned a malformed response object.`);
+  }
+  return value;
+}
+
+function agentState(value, operation) {
+  const state = text(value, `Herdr ${operation} response state`);
+  if (!AGENT_STATES.has(state)) fail(`Herdr ${operation} returned unknown agent state '${state}'.`);
+  return state;
+}
+
+function responseWithState(value, operation) {
+  const response = object(value, operation);
+  return { ...response, state: agentState(response.state, operation) };
+}
+
+// Crosby always launches Claude in bypass mode, so its footer marks an input-ready TUI.
+const CLAUDE_READY = /bypass permissions on/i;
+const CLAUDE_DIALOG = /Yes, I trust this folder|Yes, I accept/i;
+
+export function createHerdrClient({ invoke, platform = process.platform, startupTimeoutMs = 60_000, dialogTimeoutMs = 30 * 60_000, pollMs = 500, onStartupDialog } = {}) {
+  if (typeof invoke !== "function") fail("Herdr client requires an invoke(operation, input) function.");
+
+  async function call(operation, input) {
+    try {
+      return await invoke(operation, input);
+    } catch (error) {
+      if (error instanceof HerdrClientError) throw error;
+      const detail = error instanceof Error ? error.message : String(error ?? "unknown error");
+      fail(`Herdr ${operation} failed: ${detail}`);
+    }
+  }
+
+  return {
+    async snapshot() {
+      return object(await call("snapshot", {}), "snapshot");
+    },
+
+    async focusTab({ tab } = {}) {
+      return call("focusTab", { tab: text(tab, "tab") });
+    },
+
+    async createTaskTab({ workspace, label, cwd, focus = false, env } = {}) {
+      const input = {
+        workspace: text(workspace, "workspace"),
+        label: text(label, "label"),
+        cwd: text(cwd, "cwd"),
+        focus: focus === true,
+      };
+      if (env !== undefined) {
+        if (!env || typeof env !== "object" || Array.isArray(env)) fail("env must be an object of environment variables.");
+        input.env = Object.fromEntries(
+          Object.entries(env).map(([key, value]) => {
+            if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) fail(`env key '${key}' is invalid.`);
+            const normalized = text(value, `env ${key}`);
+            if (/[\r\n\0]/.test(normalized)) fail(`env ${key} must not contain control characters.`);
+            return [key, normalized];
+          }),
+        );
+      }
+      const response = object(await call("createTab", input), "createTab");
+      return {
+        workspace: text(response.workspace, "Herdr createTab response workspace"),
+        tab: text(response.tab, "Herdr createTab response tab"),
+        pane: text(response.pane, "Herdr createTab response pane"),
+      };
+    },
+
+    async createVerifierPane({ pane, cwd, env = {} } = {}) {
+      const environment = Object.fromEntries(Object.entries(env).map(([key, value]) => {
+        if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || typeof value !== 'string' || !value || /[\r\n\0]/.test(value)) fail('Invalid verifier environment.');
+        return [key, value];
+      }));
+      const source = text(pane, 'source pane');
+      const layout = object(await call('paneLayout', { pane: source }), 'paneLayout');
+      const rect = layout.panes?.find((entry) => entry.pane_id === source)?.rect;
+      if (!rect?.width || !rect?.height) fail('Cannot determine source pane geometry for verifier split.');
+      const direction = rect.width >= rect.height * 2 ? 'right' : 'down';
+      const response = object(await call('splitPane', { pane: source, direction, cwd: text(cwd, 'cwd'), focus: false, env: environment }), 'splitPane');
+      return { pane: text(response.pane, 'verifier pane'), tab: text(response.tab, 'verifier tab') };
+    },
+
+    async closeTaskTab({ tab } = {}) {
+      const response = object(await call("closeTab", { tab: text(tab, "tab") }), "closeTab");
+      return { tab: text(response.tab, "Herdr closeTab response tab") };
+    },
+
+    // `herdr agent start --kind claude` cannot launch the npm shim on Windows, so the
+    // prepared command is typed into the pane shell and Herdr detection is polled.
+    async startClaudeAgent({ pane, name, command } = {}) {
+      const paneId = text(pane, "pane");
+      const agentName = name === undefined ? undefined : text(name, "name");
+      const launch = text(command, "command");
+      if (!/^claude\s/.test(launch) || /[\r\n\0]/.test(launch)) fail("Claude startup received an unsafe launch command.");
+      await call("runPaneCommand", { pane: paneId, command: launch });
+      let deadline = Date.now() + startupTimeoutMs;
+      let dialogReported = false;
+      let detected;
+      while (!detected) {
+        let inspection = null;
+        try {
+          inspection = responseWithState(await call("inspectAgent", { agent: paneId }), "inspectAgent");
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+        }
+        if (inspection && ["idle", "done", "blocked"].includes(inspection.state)) {
+          // Herdr may report idle before a startup dialog renders, so confirm on screen.
+          const screen = String((await call("readAgent", { agent: paneId, source: "visible" }))?.text ?? "");
+          if (CLAUDE_DIALOG.test(screen)) {
+            if (!dialogReported) {
+              dialogReported = true;
+              deadline = Date.now() + dialogTimeoutMs;
+              // First launch in a new repository asks for folder trust; the operator answers it.
+              onStartupDialog?.({ pane: paneId, name: agentName ?? null, message: `Claude in pane ${paneId} is asking to trust this repository (first run). Choose "Yes, I trust this folder" there; Crosby continues automatically.` });
+            }
+          } else if (inspection.state !== "blocked" && CLAUDE_READY.test(screen)) {
+            detected = inspection;
+          }
+        }
+        if (!detected) {
+          if (Date.now() >= deadline) {
+            fail(dialogReported
+              ? `Claude in pane ${paneId} is still waiting on its startup dialog. Answer it in the pane, then resume.`
+              : `Claude did not become ready in pane ${paneId}.`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, pollMs));
+        }
+      }
+      const response = agentName
+        ? responseWithState(await call("renameAgent", { agent: paneId, name: agentName }), "renameAgent")
+        : detected;
+      return {
+        ...response,
+        name: text(response.name, "Herdr detected agent name"),
+        pane: paneId,
+      };
+    },
+
+    async promptAgent({ agent, prompt, wait = false } = {}) {
+      const response = await call("promptAgent", {
+        agent: text(agent, "agent"),
+        prompt: text(prompt, "prompt"),
+        wait: wait === true,
+      });
+      const submitted = responseWithState(response, 'promptAgent');
+      if (platform !== 'win32' || wait || submitted.state === 'working') return submitted;
+      try {
+        return responseWithState(await call('waitForAgent', { agent, until: ['working'], timeout: 5000 }), 'prompt acknowledgement');
+      } catch {
+        const current = responseWithState(await call('inspectAgent', { agent }), 'inspectAgent');
+        if (!['idle', 'done'].includes(current.state)) fail('Prompt was not acknowledged; inspect the retained agent before retrying.');
+        // Windows startup can paste into the editor before Enter is accepted. Submit
+        // that existing buffer once, never retransmit the prompt or start a second agent.
+        await call('sendAgentKeys', { agent, keys: ['enter'] });
+        return responseWithState(await call('waitForAgent', { agent, until: ['working'], timeout: 5000 }), 'prompt acknowledgement');
+      }
+    },
+
+    async waitForAgent({ agent, until, timeout } = {}) {
+      const states = Array.isArray(until) && until.length ? until : ["idle", "done", "blocked"];
+      if (states.some((state) => typeof state !== "string" || !AGENT_STATES.has(state))) {
+        fail("until must contain known Herdr agent lifecycle states.");
+      }
+      const input = { agent: text(agent, "agent"), until: [...states] };
+      if (timeout !== undefined) {
+        if (!Number.isInteger(timeout) || timeout < 1) fail("timeout must be a positive integer.");
+        input.timeout = timeout;
+      }
+      return responseWithState(await call("waitForAgent", input), "waitForAgent");
+    },
+
+    async readAgent({ agent, lines, source = "recent-unwrapped" } = {}) {
+      if (!["visible", "recent", "recent-unwrapped", "detection"].includes(source)) {
+        fail("source must be a supported Herdr read source.");
+      }
+      const input = { agent: text(agent, "agent"), source };
+      if (lines !== undefined) {
+        if (!Number.isInteger(lines) || lines < 1) fail("lines must be a positive integer.");
+        input.lines = lines;
+      }
+      const response = object(await call("readAgent", input), "readAgent");
+      if (typeof response.text !== "string") fail("Herdr readAgent returned a response without text output.");
+      return response;
+    },
+
+    async renameAgent({ agent, name } = {}) {
+      const response = responseWithState(await call("renameAgent", {
+        agent: text(agent, "agent"),
+        name: text(name, "name"),
+      }), "renameAgent");
+      return { ...response, name: text(response.name, "Herdr renameAgent response name") };
+    },
+
+    async sendAgentKeys({ agent, keys } = {}) {
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== "string" || !key.trim())) {
+        fail("keys must be a non-empty array of strings.");
+      }
+      return responseWithState(await call("sendAgentKeys", { agent: text(agent, "agent"), keys: [...keys] }), "sendAgentKeys");
+    },
+
+    async stopAgent({ agent } = {}) {
+      return responseWithState(await call("stopAgent", { agent: text(agent, "agent") }), "stopAgent");
+    },
+
+    async inspectAgent({ agent } = {}) {
+      const response = responseWithState(await call("inspectAgent", { agent: text(agent, "agent") }), "inspectAgent");
+      return { ...response, name: text(response.name, "Herdr inspectAgent response name") };
+    },
+  };
+}
+
+export { AGENT_STATES };

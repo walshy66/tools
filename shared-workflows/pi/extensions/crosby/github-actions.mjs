@@ -1,5 +1,6 @@
 export function parseGitHubCommand(args) {
   const tokens = String(args ?? "").trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 2 && tokens[0].toLowerCase() === 'resume' && (/^#?\d+$/.test(tokens[1]) || /^https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+\/?$/i.test(tokens[1]))) return { mode: 'resume', issueRef: tokens[1] };
   if (tokens.length === 1 && tokens[0] === "--watch") return { mode: "watch" };
   if (tokens.length === 2 && ["push", "review"].includes(tokens[0].toLowerCase())) return { mode: tokens[0].toLowerCase(), issueRef: tokens[1] };
   if (tokens.length === 1 && (/^#?\d+$/.test(tokens[0]) || /^https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+\/?$/i.test(tokens[0]))) return { mode: "parent", issueRef: tokens[0] };

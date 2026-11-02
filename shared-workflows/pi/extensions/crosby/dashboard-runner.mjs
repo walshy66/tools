@@ -20,6 +20,9 @@ export function parseDashboardRunnerArgs(argv = []) {
     if (arg === "--run") {
       args.run = argv[i + 1] ?? null;
       i += 1;
+    } else if (arg === "--run-file") {
+      args.runFile = argv[i + 1] ?? null;
+      i += 1;
     } else if (arg === "--events-path") {
       args.eventsPath = argv[i + 1] ?? null;
       i += 1;
@@ -41,7 +44,7 @@ function findMostRecentRunDir(runsRoot) {
   let mostRecent = null;
   let mostRecentMtime = -Infinity;
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || entry.name === "dashboard-panes") continue;
     const dirPath = path.join(runsRoot, entry.name);
     let mtimeMs;
     try {
@@ -65,6 +68,16 @@ export function resolveDashboardEventsPath(args, options = {}) {
   if (args.eventsPath) return args.eventsPath;
 
   const runsRoot = getCrosbyRunsRoot(options);
+
+  if (args.runFile) {
+    try {
+      const binding = JSON.parse(fs.readFileSync(args.runFile, "utf8"));
+      return binding.runId ? path.join(runsRoot, binding.runId, "events.jsonl") : null;
+    } catch {
+      // A binding may be briefly unreadable while a rerun updates it.
+      return null;
+    }
+  }
 
   if (args.run) return path.join(runsRoot, args.run, "events.jsonl");
 
@@ -119,19 +132,23 @@ export function watchDashboardEventsPath(eventsPath, options = {}) {
   const write = options.write ?? ((text) => process.stdout.write(text));
   const intervalMs = options.intervalMs ?? WATCH_POLL_INTERVAL_MS;
   let lastSize = -1;
+  let lastPath = null;
   let stopped = false;
 
   const tick = () => {
     if (stopped) return;
+    const currentPath = options.resolveEventsPath ? options.resolveEventsPath() : eventsPath;
+    if (!currentPath) return;
     let size = -1;
     try {
-      size = fs.statSync(eventsPath).size;
+      size = fs.statSync(currentPath).size;
     } catch {
       size = -1;
     }
-    if (size !== lastSize) {
+    if (size !== lastSize || currentPath !== lastPath) {
       lastSize = size;
-      printDashboard(eventsPath, { write });
+      lastPath = currentPath;
+      printDashboard(currentPath, { write });
     }
   };
 
@@ -149,7 +166,7 @@ export async function runDashboardRunner(argv, options = {}) {
   const eventsPath = resolveDashboardEventsPath(args, options);
   const write = options.write ?? ((text) => process.stdout.write(text));
 
-  if (!eventsPath) {
+  if (!eventsPath && (!args.runFile || args.once)) {
     write("No Crosby run found to render.\n");
     return { eventsPath: null, stop: null };
   }
@@ -159,7 +176,10 @@ export async function runDashboardRunner(argv, options = {}) {
     return { eventsPath, stop: null };
   }
 
-  const stop = watchDashboardEventsPath(eventsPath, options);
+  const stop = watchDashboardEventsPath(eventsPath, {
+    ...options,
+    ...(args.runFile ? { resolveEventsPath: () => resolveDashboardEventsPath(args, options) } : {}),
+  });
   return { eventsPath, stop };
 }
 

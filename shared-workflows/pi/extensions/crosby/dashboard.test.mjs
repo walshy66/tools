@@ -12,11 +12,20 @@ import {
   markDashboardFatalError,
   markDashboardHerdrWorkerStarted,
   markDashboardPaneOpened,
+  markDashboardQualityStage,
   persistDashboardEvent,
   reconcileDashboardFromQueue,
   renderCrosbyCompactDashboard,
   renderCrosbyDashboard,
 } from "./dashboard.mjs";
+
+test('dashboard records verifier stages and actionable parent blockers', () => {
+  const dashboard = createCrosbyDashboard({parent:{identifier:'#1',title:'Parent'},children:[]});
+  markDashboardQualityStage(dashboard,{taskId:'task-002',stage:'review',summary:'Reviewing code',artifactDir:'/evidence'});
+  markDashboardQualityStage(dashboard,{taskId:null,stage:'blocked',summary:'Test account missing',requiredHumanAction:'Provision synthetic account'});
+  const text=renderCrosbyDashboard(dashboard).join('\n');
+  assert.match(text,/Reviewing code/);assert.match(text,/Test account missing/);assert.match(text,/Provision synthetic account/);assert.match(text,/\/evidence/);
+});
 
 function makeTempRunsRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "crosby-dashboard-test-"));

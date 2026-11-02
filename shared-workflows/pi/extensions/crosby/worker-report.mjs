@@ -21,7 +21,7 @@ export async function persistWorkerReport({ report, env = process.env, emitHerdr
     buildId: env.CROSBY_BUILD_ID || "default",
     buildFolder: env.CROSBY_BUILD_FOLDER || null,
     parentBranch: env.CROSBY_PARENT_BRANCH || null,
-    spaceId: env.HERDR_WORKSPACE_ID || "default",
+    spaceId: env.CROSBY_SPACE_ID || env.HERDR_WORKSPACE_ID || "default",
   });
   const existingRegistry = await readRegistry(store);
   if (!existingRegistry.workers?.[taskKey]) throw new Error(`No registered Crosby worker exists for ${taskKey}. Recovery: relaunch the task from the Crosby supervisor.`);

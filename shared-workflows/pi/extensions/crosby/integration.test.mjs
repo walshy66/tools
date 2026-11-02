@@ -1,53 +1,23 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { IntegrationError, integrateTask } from "./integration.mjs";
-
-const task = {
-  id: "task-005",
-  fileScope: [{ path: "src", type: "directory" }],
-  verification: ["node --test"],
-};
-const taskWorktree = { path: "/managed/task-005", branch: "crosby/task-005", baseSha: "base" };
-const parentWorktree = { path: "/managed/parent", branch: "crosby/parent" };
-
-function operations(overrides = {}) {
-  const calls = [];
-  return {
-    calls,
-    collectChangedPaths: async () => { calls.push("paths"); return ["src/feature.mjs"]; },
-    validateChangedPaths: (paths, scopes) => { calls.push(["scope", paths, scopes]); return { valid: true }; },
-    runTaskVerification: async () => { calls.push("verify"); return { skipped: false, results: [{ code: 0 }] }; },
-    safeCommit: async () => { calls.push("commit"); return { committed: true, sha: "task-sha" }; },
-    serializedMerge: async () => { calls.push("merge"); return { merged: true, sha: "parent-sha" }; },
-    retainTaskFailure: ({ reason }) => ({ outcome: "review-required", recoveryNotes: [reason] }),
-    ...overrides,
-  };
-}
-
-test("validates, verifies, commits, and merges a task serially into the parent", async () => {
-  const ops = operations();
-  const result = await integrateTask({ task, taskWorktree, parentWorktree, operations: ops });
-
-  assert.deepEqual(ops.calls.map((entry) => typeof entry === "string" ? entry : entry[0]), ["paths", "scope", "verify", "commit", "merge"]);
-  assert.equal(result.merge.merged, true);
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { integrateTask } from './integration.mjs';
+import { contractHash } from './quality-gates.mjs';
+const task = { id:'task-005',fileScope:['src/'],verification:['node --test'],reviewContext:'rules',browserAcceptance:{required:false,reason:'backend only',scenarios:[]} };
+const taskWorktree={path:'/task',branch:'task',baseSha:'base'},parentWorktree={path:'/parent',branch:'parent'};
+const revision='a'.repeat(40);
+function gates() {return {outcome:'passed',revision,contractHash:contractHash(task),reports:[{runId:'r',stage:'review',revision,contractHash:contractHash(task),outcome:'passed',summary:'ok',reportPath:'/evidence.md',safety:'confirmed',architecture:'passed',checks:[{command:'node --test',result:'passed'}]}]};}
+function ops(overrides={}) {const calls=[];return {calls,assertStableRevision:async()=>revision,collectChangedPaths:async()=>['src/a'],validateChangedPaths:()=>{},serializedMerge:async()=>{calls.push('merge');return {merged:true};},retainTaskFailure:()=>({outcome:'review-required'}),...overrides};}
+test('integration refuses missing, stale or failed gates even on direct/manual invocation',async()=>{
+ for(const proof of [undefined,{...gates(),revision:'old'},{...gates(),outcome:'blocked'}]){
+  const operations=ops();await assert.rejects(integrateTask({task,taskWorktree,parentWorktree,gates:proof,operations}),/gate|revision/i);assert.deepEqual(operations.calls,[]);
+ }
 });
-
-test("retains task evidence and does not merge when verification fails", async () => {
-  const ops = operations({
-    runTaskVerification: async () => { ops.calls.push("verify"); throw new Error("tests failed"); },
-  });
-  await assert.rejects(
-    integrateTask({ task, taskWorktree, parentWorktree, operations: ops }),
-    (error) => error instanceof IntegrationError && /tests failed/.test(error.message) && error.retained.outcome === "review-required",
-  );
-  assert.deepEqual(ops.calls, ["paths", ["scope", ["src/feature.mjs"], task.fileScope], "verify"]);
+test('integration merges only clean verified revision without rerunning unsafe shell or auto-committing changes',async()=>{
+ const operations=ops();const result=await integrateTask({task,taskWorktree,parentWorktree,gates:gates(),operations});assert.equal(result.merge.merged,true);assert.deepEqual(operations.calls,['merge']);
 });
-
-test("retains task evidence when changed paths escape the declared scope", async () => {
-  const ops = operations({
-    collectChangedPaths: async () => { ops.calls.push("paths"); return ["docs/outside.md"]; },
-    validateChangedPaths: () => { ops.calls.push("scope"); throw new Error("outside scope"); },
-  });
-  await assert.rejects(() => integrateTask({ task, taskWorktree, parentWorktree, operations: ops }), /outside scope/);
-  assert.deepEqual(ops.calls, ["paths", "scope"]);
+test('integration retains out-of-scope changes and refuses browser bypass',async()=>{
+ const operations=ops({validateChangedPaths:()=>{throw new Error('outside scope');}});await assert.rejects(integrateTask({task,taskWorktree,parentWorktree,gates:gates(),operations}),/outside scope/);
+ const browserTask={...task,browserAcceptance:{required:true,scenarios:[{id:'PW-01'}]}};
+ const proof=gates();proof.contractHash=contractHash(browserTask);proof.reports[0].contractHash=proof.contractHash;
+ await assert.rejects(integrateTask({task:browserTask,taskWorktree,parentWorktree,gates:proof,operations:ops()}),/test gate/);
 });
