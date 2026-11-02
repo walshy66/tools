@@ -18,7 +18,7 @@ test("runs a durable build from GitHub and reports integrated children", async (
   }, runBuild: async ({ buildFolder, adapters }) => {
     assert.match(buildFolder, /crosby-github/);
     await adapters.onTaskIntegrated({ task: { id: "task-017" }, report: { changes: { commit: "abc" } } });
-    return { completed: [] };
+    return { completed: [], readyForReview: true };
   } });
   assert.ok(result.queue);
   assert.equal(moved.length, 2);

@@ -31,6 +31,24 @@ test("creates a task tab without stealing focus and validates its root pane", as
   }]);
 });
 
+test("opens a verifier sibling without stealing focus and sets environment before launch", async () => {
+  const fake = fakeHerdr({ paneLayout: { panes: [{pane_id:'pane-1',rect:{width:100,height:25}}] }, splitPane: { pane: 'pane-2', tab: 'tab-1' } });
+  const client = createHerdrClient({ invoke: fake.invoke });
+  assert.deepEqual(await client.createVerifierPane({ pane: 'pane-1', cwd: '/work', env: { CROSBY_GATE_REQUEST: '/request.json' } }), { pane: 'pane-2', tab: 'tab-1' });
+  assert.equal(fake.calls[1].input.focus, false);
+  assert.equal(fake.calls[1].input.pane, 'pane-1');
+  assert.equal(fake.calls[1].input.direction, 'right');
+});
+
+test('Windows startup prompt confirms submission and recovers a pending Enter once', async () => {
+  let waits=0;
+  const fake=fakeHerdr({promptAgent:{state:'idle'},waitForAgent:()=>{if(waits++===0)throw new Error('not working');return {state:'working'};},inspectAgent:{name:'reviewer',state:'idle'},sendAgentKeys:{state:'working'}});
+  const client=createHerdrClient({invoke:fake.invoke,platform:'win32'});
+  assert.equal((await client.promptAgent({agent:'reviewer',prompt:'Review only'})).state,'working');
+  assert.equal(fake.calls.filter(call=>call.operation==='promptAgent').length,1);
+  assert.deepEqual(fake.calls.find(call=>call.operation==='sendAgentKeys').input.keys,['enter']);
+});
+
 test("exposes validated agent control operations", async () => {
   const fake = fakeHerdr({
     snapshot: { workspaces: [] },

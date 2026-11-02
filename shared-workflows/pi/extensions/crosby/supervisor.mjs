@@ -88,7 +88,6 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
     if (existing?.agent && ["launching", "working"].includes(existing.lifecycle)) {
       const adopted = await adoptWorker(id);
       if (adopted.adopted) {
-        if (typeof client.focusTab === "function" && existing.tab) await client.focusTab({ tab: existing.tab });
         return adopted.worker;
       }
     }
@@ -96,16 +95,15 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
     if (existing?.tab || existing?.pane || existing?.agent) {
       try {
         const inspection = await client.inspectAgent({ agent: existing.pane ?? existing.agent ?? expectedAgent });
-        if (["working", "idle", "blocked"].includes(inspection.state)) {
+        if (["working", "idle", "done", "blocked"].includes(inspection.state)) {
           const actualAgent = inspection.name ?? existing.agent ?? expectedAgent;
-          if (inspection.state === "idle" && typeof client.promptAgent === "function") {
+          if (["idle", "done"].includes(inspection.state) && typeof client.promptAgent === "function") {
             await client.promptAgent({ agent: actualAgent, prompt: workerPrompt, wait: false });
           }
           const adopted = await updateRegistry(store, (current) => ({
             ...current,
             workers: { ...current.workers, [id]: { ...(current.workers[id] ?? {}), taskId: id, agent: actualAgent, lifecycle: inspection.state === "working" ? "working" : "recovered" } },
           }));
-          if (typeof client.focusTab === "function" && existing?.tab) await client.focusTab({ tab: existing.tab });
           return adopted.workers[id];
         }
       } catch {
@@ -133,7 +131,7 @@ export function createHerdrSupervisor({ client, store, emitLifecycle } = {}) {
 
     let tab;
     try {
-      tab = await client.createTaskTab({ workspace: store.spaceId, label: task?.tabLabel ?? `Task ${id}`, cwd: workingDirectory, focus: false, env });
+      tab = await client.createTaskTab({ workspace: (await readRegistry(store)).supervisor?.workspace ?? store.spaceId, label: task?.tabLabel ?? `Crosby #${id.replace(/^task-0*/, '')}`, cwd: workingDirectory, focus: false, env });
       await updateRegistry(store, (current) => ({
         ...current,
         workers: { ...current.workers, [id]: { ...current.workers[id], tab: tab.tab, pane: tab.pane } },

@@ -39,7 +39,7 @@ export async function runGitHubParent({ issueRef, exec, repository, runBuild, bu
         children: refreshedRaw.children.map((child) => child.standaloneParentTask ? { ...child, state: { name: "Done", type: "completed" } } : child),
       }
     : refreshedRaw;
-  if (refreshed.children.every((child) => child.state.name === "Done")) {
+  if (result?.readyForReview === true && refreshed.children.every((child) => child.state.name === "Done")) {
     await client.addComment(refreshed.parent.identifier, buildGitHubParentSummary({ parent: refreshed.parent, children: refreshed.children.filter((child) => child.state.name === "Done") }));
     await client.moveIssue(refreshed.parent.identifier, "Review");
   }

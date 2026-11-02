@@ -79,5 +79,9 @@ export function createGitHubClient({ exec, repository } = {}) {
     await run(["issue", "comment", normalizeIssueRef(issueRef), "--body", String(body)]);
   }
 
-  return { loadIssue, loadParentQueue, loadExecuteParentQueues, moveIssue, addComment, repository: expectedRepository };
+  async function reopenIssue(issueRef) {
+    await run(['issue', 'reopen', normalizeIssueRef(issueRef)]);
+  }
+
+  return { loadIssue, loadParentQueue, loadExecuteParentQueues, moveIssue, reopenIssue, addComment, repository: expectedRepository };
 }

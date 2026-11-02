@@ -1,0 +1,236 @@
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { validateQueueState } from "./state-machine.mjs";
+
+export const REGISTRY_VERSION = 1;
+
+export class RegistryError extends Error {
+  constructor(message) {
+    super(`${message} Recovery: inspect the Crosby registry and retained task worktrees, correct the recorded state, then retry the supervisor.`);
+    this.name = "RegistryError";
+  }
+}
+
+function registryError(message) {
+  throw new RegistryError(message);
+}
+
+function requireText(value, name) {
+  const text = String(value ?? "").trim();
+  if (!text) registryError(`${name} must be a non-empty string.`);
+  return text;
+}
+
+export function registryKey(repositoryIdentity, parentKey, buildId = "default", spaceId = "default") {
+  return createHash("sha256").update(`${requireText(repositoryIdentity, "repositoryIdentity")}\0${requireText(parentKey, "parentKey")}\0${requireText(buildId, "buildId")}\0${requireText(spaceId, "spaceId")}`).digest("hex");
+}
+
+export function createRegistryStore({ root, repositoryIdentity, parentKey, buildId = "default", buildFolder = null, parentBranch = null, spaceId = "default", lockTimeoutMs = 10_000, staleLockMs = 120_000 } = {}) {
+  const registryRoot = requireText(root, "root");
+  const identity = requireText(repositoryIdentity, "repositoryIdentity");
+  const parent = requireText(parentKey, "parentKey");
+  const build = requireText(buildId, "buildId");
+  const space = requireText(spaceId, "spaceId");
+  const key = registryKey(identity, parent, build, space);
+  const basePath = path.join(registryRoot, "registries", key);
+  return {
+    root: registryRoot,
+    repositoryIdentity: identity,
+    parentKey: parent,
+    buildId: build,
+    buildFolder,
+    parentBranch,
+    spaceId: space,
+    path: `${basePath}.json`,
+    lockPath: `${basePath}.lock`,
+    lockTimeoutMs,
+    staleLockMs,
+  };
+}
+
+function initialRegistry(store) {
+  return {
+    version: REGISTRY_VERSION,
+    repositoryIdentity: store.repositoryIdentity,
+    parentKey: store.parentKey,
+    buildId: store.buildId,
+    buildFolder: store.buildFolder,
+    parentBranch: store.parentBranch,
+    spaceId: store.spaceId,
+    supervisor: null,
+    queueState: "ready",
+    currentTask: null,
+    tasks: {},
+    parent: null,
+    workers: {},
+  };
+}
+
+function validateRegistry(registry, store) {
+  if (!registry || typeof registry !== "object" || Array.isArray(registry)) registryError("Registry content must be a JSON object.");
+  if (registry.version !== REGISTRY_VERSION) registryError(`Registry version must be ${REGISTRY_VERSION}.`);
+  if (registry.repositoryIdentity !== store.repositoryIdentity || registry.parentKey !== store.parentKey) {
+    registryError("Registry identity does not match the requested repository and parent.");
+  }
+  for (const field of ["buildId", "spaceId"]) {
+    if (typeof registry[field] !== "string" || !registry[field].trim()) registryError(`Registry ${field} must be a non-empty string.`);
+  }
+  if (!registry.tasks || typeof registry.tasks !== "object" || Array.isArray(registry.tasks)) registryError("Registry tasks must be an object keyed by stable task ID.");
+  try {
+    validateQueueState(registry);
+  } catch (error) {
+    registryError(error.message);
+  }
+  if (!registry.workers || typeof registry.workers !== "object" || Array.isArray(registry.workers)) {
+    registryError("Registry workers must be an object keyed by stable task ID.");
+  }
+  return registry;
+}
+
+async function loadRegistry(store) {
+  try {
+    return validateRegistry(JSON.parse(await readFile(store.path, "utf8")), store);
+  } catch (error) {
+    if (error?.code === "ENOENT") return initialRegistry(store);
+    if (error instanceof RegistryError) throw error;
+    registryError(`Registry ${store.path} is unreadable or contains invalid JSON.`);
+  }
+}
+
+export async function readRegistry(store) {
+  return loadRegistry(store);
+}
+
+/** Returns durable worker records across every readable Crosby registry. */
+export async function listAllWorkers(root) {
+  const registryRoot = requireText(root, "registry root");
+  const directory = path.join(registryRoot, "registries");
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    registryError(`Could not list registries in ${directory}.`);
+  }
+
+  const workers = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    let registry;
+    try {
+      registry = JSON.parse(await readFile(path.join(directory, entry.name), "utf8"));
+    } catch {
+      registryError(`Registry ${entry.name} is unreadable or contains invalid JSON.`);
+    }
+    if (registry?.version !== REGISTRY_VERSION || typeof registry?.repositoryIdentity !== "string" || typeof registry?.parentKey !== "string" || !registry?.workers || typeof registry.workers !== "object" || Array.isArray(registry.workers)) {
+      registryError(`Registry ${entry.name} has an invalid shape.`);
+    }
+    for (const [taskKey, worker] of Object.entries(registry.workers)) {
+      if (!worker || typeof worker !== "object" || Array.isArray(worker)) continue;
+      workers.push({
+        ...worker,
+        registry: {
+          repositoryIdentity: registry.repositoryIdentity,
+          parentKey: registry.parentKey,
+          taskKey,
+          ...(worker.registry ?? {}),
+        },
+      });
+    }
+  }
+  return workers;
+}
+
+async function staleLock(lockPath, staleLockMs) {
+  try {
+    const payload = JSON.parse(await readFile(lockPath, "utf8"));
+    const createdAt = Date.parse(payload?.createdAt);
+    if (Number.isFinite(createdAt)) return Date.now() - createdAt > staleLockMs;
+    return Date.now() - (await stat(lockPath)).mtimeMs > staleLockMs;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    return true;
+  }
+}
+
+async function acquireLock(store) {
+  await mkdir(path.dirname(store.path), { recursive: true });
+  const deadline = Date.now() + store.lockTimeoutMs;
+  while (true) {
+    try {
+      const handle = await open(store.lockPath, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+      await handle.close();
+      return;
+    } catch (error) {
+      if (error?.code !== "EEXIST") registryError(`Could not acquire registry lock at ${store.lockPath}.`);
+      if (await staleLock(store.lockPath, store.staleLockMs)) {
+        await rm(store.lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) registryError(`Timed out waiting for registry lock at ${store.lockPath}.`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
+async function writeRegistry(store, registry) {
+  const valid = validateRegistry(registry, store);
+  const tempPath = `${store.path}.${process.pid}.${randomUUID()}.tmp`;
+  const serialized = `${JSON.stringify(valid, null, 2)}\n`;
+  try {
+    await writeFile(tempPath, serialized, { encoding: "utf8", flag: "wx" });
+    await rename(tempPath, store.path);
+  } finally {
+    await rm(tempPath, { force: true });
+  }
+}
+
+export async function updateRegistry(store, updater) {
+  if (typeof updater !== "function") registryError("Registry update requires an updater function.");
+  await acquireLock(store);
+  try {
+    const current = await loadRegistry(store);
+    const next = await updater(structuredClone(current));
+    if (!next) registryError("Registry updater must return a registry record.");
+    await writeRegistry(store, next);
+    return next;
+  } finally {
+    await rm(store.lockPath, { force: true });
+  }
+}
+
+export async function updateWorkerRecord(store, childKey, patch) {
+  const key = requireText(childKey, "childKey");
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) registryError("Worker update must be an object.");
+  const registry = await updateRegistry(store, (current) => ({
+    ...current,
+    workers: { ...current.workers, [key]: { ...(current.workers[key] ?? {}), ...structuredClone(patch) } },
+  }));
+  return registry.workers[key];
+}
+
+export async function recordWorkerRecovery(store, childKey, note) {
+  const key = requireText(childKey, "childKey");
+  const recoveryNote = requireText(note, "recovery note");
+  const registry = await updateRegistry(store, (current) => {
+    const worker = current.workers[key];
+    if (!worker) registryError(`Cannot recover unregistered worker ${key}.`);
+    const attempts = Number(worker.recoveryAttempts ?? 0);
+    if (attempts >= 1) registryError(`Worker ${key} has already used its one automatic same-worktree recovery.`);
+    return {
+      ...current,
+      workers: {
+        ...current.workers,
+        [key]: {
+          ...worker,
+          lifecycle: "launching",
+          recoveryAttempts: attempts + 1,
+          recoveryNotes: [...(worker.recoveryNotes ?? []), recoveryNote],
+        },
+      },
+    };
+  });
+  return registry.workers[key];
+}

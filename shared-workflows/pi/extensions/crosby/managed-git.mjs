@@ -217,6 +217,9 @@ export async function serializedMerge({ parentWorktreePath, taskBranch, message 
   const branch = text(taskBranch, "taskBranch");
   const lockPath = await acquireMergeLock(parent);
   try {
+    const status = await gitOutput(['-C', parent, 'status', '--porcelain']);
+    const unrelated = status.split(/\r?\n/).filter((line) => line && line !== '?? .crosby-merge.lock');
+    if (unrelated.length) managedGitError('Parent integration worktree has uncommitted changes; preserve and inspect them before merging.');
     const ancestry = await git(["-C", parent, "merge-base", "--is-ancestor", branch, "HEAD"], undefined, { allowFailure: true });
     if (ancestry.code === 0) {
       return { merged: false, alreadyMerged: true, sha: await gitOutput(["-C", parent, "rev-parse", "HEAD"]) };
