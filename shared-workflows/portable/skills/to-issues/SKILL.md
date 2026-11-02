@@ -32,6 +32,8 @@ Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that 
 
 - Read the plan, spec, or PRD.
 - Identify the user stories and the minimum viable outcome.
+- Read the target repository's `constitution.md`, applicable `AGENTS.md` hierarchy, and referenced architecture decisions. These govern the work; do not automatically load or fall back to the shared development constitution. Surface missing authority or conflicting rules for user resolution.
+- Load `../../templates/issue-slice-template.md` as the child-body contract. Resolve repository testing instructions for environment setup, fixtures, commands, and safety boundaries; do not invent unavailable tooling or credentials.
 - Resolve the originating GitHub parent issue from the current feature context. This may be the parent issue number or URL returned by `to-prd` after its approved PRD was published.
 - Load the parent issue metadata needed for child creation:
   - parent issue number or URL
@@ -65,6 +67,21 @@ Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that 
   - `## Crosby Locks` — advisory file/directory/domain locks used to avoid launching conflicting children in parallel.
 - If an AFK issue is too vague to name expected files, tests, and locks, mark it HITL or split/add an investigation issue first.
 
+### 2a) Add review and browser acceptance context to every slice
+
+These additions apply to both AFK and HITL issues without replacing the existing execution envelope.
+
+- Give each acceptance criterion a stable issue-local ID (`AC-01`, `AC-02`, etc.) and link it to the parent requirement or user story. Preserve IDs when revising wording.
+- Add `## Review Context` with the parent/PRD reference, applicable repository rule and decision paths, non-goals, approved deviations (or `None`), and required automated coverage mapped to AC IDs. Reference authoritative documents rather than copying rulebooks. Do not assume local `spec.md`, `plan.md`, or `tasks.md` files exist.
+- Add `## Dependencies` listing explicit prerequisite issue IDs, or `None`. Draft slice IDs may be used before publication; replace them with actual issue IDs after creation. List order and advisory locks are not substitutes for dependencies.
+- Add `## Browser Acceptance` containing exactly one declaration: `Browser testing: required` or `Browser testing: not applicable`.
+  - For `not applicable`, require a concrete reason. Missing tooling, credentials, or an unavailable environment is a blocker, not a reason to skip required browser testing.
+  - For `required`, define scenarios with stable IDs (`PW-01`, etc.), linked AC IDs, preconditions/test data, user actions, and observable expected outcomes. Include relevant failure paths, not only the happy path.
+  - Reference repository testing instructions for startup/readiness, approved environment, test accounts, isolated fixtures/cleanup, and side-effect restrictions. Record any issue-specific restrictions explicitly. Unresolved setup must be resolved with the user or an explicit prerequisite before the issue is treated as independently runnable.
+  - Require a per-scenario passed/failed/blocked report identifying the tested revision, with reproduction steps and sanitised screenshots/console/network evidence for failures. Verification is test-and-report only: no product-code, acceptance-criterion, or committed-test changes.
+- Keep `## Verification` exclusively for executable automated commands. Put coverage descriptions in `Review Context` and browser steps in `Browser Acceptance`, never as bullets beneath `Verification`: the current Crosby parser treats those bullets as shell commands.
+- These sections define the portable issue contract. Crosby's runtime owns propagation, reviewer/tester invocation and dependency/completion gates; creating an issue is not evidence that any gate has run. See the runtime's README for its supported execution and recovery contract.
+
 ### 3) Review with the user
 
 - Ask whether the granularity feels right.
@@ -83,7 +100,7 @@ Convert a plan, spec, or PRD into thin, vertical-slice GitHub child issues that 
 ### 5) Finalize the issue list for approval
 
 - Present the issue titles in dependency order.
-- Include the acceptance criteria for each issue.
+- Include the identified acceptance criteria, review context, explicit dependencies, and browser-testing declaration/scenarios for each issue.
 - Include proposed labels for each issue.
 - Explicitly ask for approval before creating anything in GitHub.
 
@@ -93,11 +110,13 @@ Only after explicit user approval, create the approved issues in GitHub as child
 
 Use `gh issue create` for each child, then link every created child to the parent with GitHub's native sub-issue API. The `type:child` label must still be applied; it is execution metadata, not a substitute for the native sub-issue relationship.
 
+For multiline child bodies, write each approved body to a Markdown file and publish it with `--body-file`. Do not embed large Markdown bodies in shell or PowerShell arguments, heredocs, or generated language-specific object literals. Keep the publication state small and explicit: one body file per child and one mapping of draft slice IDs to created issue numbers.
+
 Each created child should include:
 
 - `Parent: #<parent-number>` in the body.
 - Scope and acceptance criteria.
-- Any blocker/dependency notes.
+- `Review Context`, `Dependencies`, and `Browser Acceptance` sections as defined above, in addition to any blocker notes.
 - For AFK/buildable issues: `Outcome`, `Acceptance Criteria`, `File Scope`, `Verification`, and `Guardrails` sections. `Expected Files`, `Do Not Touch`, `Test Command`, and `Crosby Locks` may be included as explanatory detail, but the four execution sections are authoritative.
 - The same milestone as the parent, when present.
 - Inherited parent labels where appropriate, especially work-type and local-folder routing labels.
@@ -108,12 +127,12 @@ Each created child should include:
   - work type: `wt:development` or `wt:process-automation`
   - worker routing labels: `model:<provider>/<model-id>` and/or `thinking:<off|minimal|low|medium|high|xhigh|max>` when assessed
 
-Example:
+Example (prepare `child-body.md` from the template with all required sections and the approved content before running):
 
 ```bash
 child_url=$(gh issue create \
   --title "Add backend validation" \
-  --body "Parent: #122\n\n## Scope\n...\n\n## Expected Files\n- backend/app/validation.py\n- backend/app/tests/test_validation.py\n\n## Do Not Touch\n- frontend/\n- migrations/\n\n## Crosby Locks\n- backend/app/validation.py\n\n## Test Command\npytest backend/app/tests/test_validation.py\n\n## Acceptance Criteria\n- [ ] ..." \
+  --body-file child-body.md \
   --label "type:child,status:ready-to-build,mode:afk,wt:development,model:openai-codex/gpt-5.6-luna,thinking:low" \
   --milestone "my-feature")
 child_number="${child_url##*/}"
@@ -144,6 +163,7 @@ After creating the children:
   - [ ] #124 Add frontend empty state
   ```
 
+- Resolve every draft dependency reference to its actual GitHub issue ID and update affected child bodies without changing approved scope. Verify the published bodies retain review context, AC IDs, explicit dependencies, and browser declarations/scenarios; do not leave unresolved placeholders.
 - Do not create a new parent issue.
 - Verify each child has the correct native sub-issue relationship, parent reference, milestone, labels, and initial status label. Prefer verifying the parent relationship with:
 
@@ -170,7 +190,10 @@ Use a numbered list where each proposed issue includes:
 - Do not touch (AFK required)
 - Crosby locks (AFK required)
 - Test command (AFK required)
-- Acceptance criteria
+- Acceptance criteria with stable IDs and parent requirement/story links
+- Review context: repository rules/decisions, non-goals, approved deviations, and required automated coverage
+- Explicit prerequisite issue IDs (draft slice IDs before publication), or None
+- Browser testing: required / not applicable; reason when not applicable, linked scenarios and testing-instructions reference when required
 - Proposed labels, including assessed `model:*` and `thinking:*` settings
 
 After approval and creation, also report:
@@ -189,6 +212,12 @@ After approval and creation, also report:
 - Is each issue independently valuable?
 - Does each issue deliver a complete vertical slice?
 - Are blockers minimal and realistic?
+- Does every issue include review context anchored to the target repository's rules, rather than an unrelated shared product constitution?
+- Are AC IDs stable and traceable to parent requirements/stories and planned coverage?
+- Does every issue explicitly declare browser testing required or not applicable, with a concrete reason for the latter?
+- Do required browser scenarios map to AC IDs and specify preconditions, actions, expected outcomes, safe setup, and report evidence?
+- Are executable commands separated from browser steps and coverage prose?
+- Are dependencies explicit issue IDs (or None), with draft references resolved before publication is reported complete?
 - Would the issue list support incremental delivery?
 - Is each AFK/buildable issue parallel-ready with expected files, do-not-touch boundaries, a narrow test command, and Crosby locks?
 - Are vague or discovery-heavy items marked HITL or split into investigation-first issues instead of AFK parallel work?

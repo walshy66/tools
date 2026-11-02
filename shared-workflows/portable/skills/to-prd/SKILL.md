@@ -69,9 +69,11 @@ Example after approval:
 ```bash
 gh issue create \
   --title "<feature title>" \
-  --body "$(cat prd.md)\n\n## Child Issues\n\n<!-- to-issues will populate this checklist. -->" \
+  --body-file prd.md \
   --label "type:parent,status:ready,wt:development"
 ```
+
+The approved `prd.md` must already contain the `## Child Issues` placeholder before publishing. Use `--body-file` for multiline bodies so publication behaves consistently across shells and operating systems.
 
 ## Output Format
 
