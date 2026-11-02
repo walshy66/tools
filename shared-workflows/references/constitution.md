@@ -30,14 +30,14 @@ For non-Linear hard-gated work, the accepted prompt headers are:
 
 ## Selection Algorithm
 
-1. If a Linear issue exists, read its work-type label.
-2. For hard-gated skills, require exactly one valid work-type selector.
+1. If a Linear or GitHub issue exists, read its work-type label.
+2. For hard-gated skills, require exactly one valid work-type selector from issue metadata or the prompt header.
 3. If the selector is missing, stop and tell the user to add `wt:development` or `wt:process-automation`.
 4. If multiple work-type labels are present, stop and require exactly one.
-5. If no Linear issue exists for hard-gated work, require an explicit `Work Type:` header in the prompt.
+5. If no tracked issue exists for hard-gated work, require an explicit `Work Type:` header in the prompt.
 6. Load `## Core` from this file.
 7. Load the mapped work-type document.
 8. Apply additive rules from the work-type document.
-9. Apply only the overrides declared in that document’s `## Overrides` section.
+9. Apply only the overrides declared in that document's `## Overrides` section.
 10. If the selector conflicts with the narrative issue content, proceed by selector and warn.
 11. If the mapped document is missing or unreadable, stop with a configuration error.

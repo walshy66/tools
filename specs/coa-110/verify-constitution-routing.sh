@@ -31,6 +31,8 @@ require_file "$proc"
 require_line '## Core' "$entry" "constitution.md missing '## Core'"
 require_line '## Work Type Routing' "$entry" "constitution.md missing '## Work Type Routing'"
 require_line '## Selection Algorithm' "$entry" "constitution.md missing '## Selection Algorithm'"
+require_line 'If a Linear or GitHub issue exists, read its work-type label.' "$entry" "constitution.md missing cross-tracker issue routing guidance"
+require_line 'If no tracked issue exists for hard-gated work, require an explicit `Work Type:` header in the prompt.' "$entry" "constitution.md missing no-issue prompt-header guidance"
 require_line 'constitution.development.md' "$entry" "constitution.md missing development mapping"
 require_line 'constitution.process-automation.md' "$entry" "constitution.md missing process-automation mapping"
 require_line 'If the selector is missing, stop and tell the user to add `wt:development` or `wt:process-automation`.' "$entry" "constitution.md missing missing-label blocking guidance"
@@ -39,7 +41,7 @@ require_line 'If the selector conflicts with the narrative issue content, procee
 require_line 'If the mapped document is missing or unreadable, stop with a configuration error.' "$entry" "constitution.md missing missing-doc blocking guidance"
 require_line 'Work Type: development' "$entry" "constitution.md missing non-Linear development header guidance"
 require_line 'Work Type: process-automation' "$entry" "constitution.md missing non-Linear process-automation header guidance"
-require_line 'Apply only the overrides declared in that document’s `## Overrides` section.' "$entry" "constitution.md missing explicit override handling guidance"
+require_line 'Apply only the overrides declared in that document'"'"'s `## Overrides` section.' "$entry" "constitution.md missing explicit override handling guidance"
 
 require_line '## Overrides' "$dev" "constitution.development.md missing '## Overrides'"
 require_line '- None.' "$dev" "constitution.development.md missing explicit override declaration"
@@ -49,7 +51,6 @@ require_line '- None.' "$proc" "constitution.process-automation.md missing expli
 non_linear_hard_gated_skills=(
   "$skills_root/analyze/SKILL.md"
   "$skills_root/clarify/SKILL.md"
-  "$skills_root/code-reviewer/SKILL.md"
   "$skills_root/design/SKILL.md"
   "$skills_root/design-reviewer/SKILL.md"
   "$skills_root/implement/SKILL.md"
@@ -72,6 +73,10 @@ for skill in "${non_linear_hard_gated_skills[@]}"; do
   require_line 'If the selector conflicts with the issue narrative, warn and proceed by selector' "$skill" "$skill missing mismatch warning guidance"
   require_line 'Load `## Core` plus the mapped work-type document' "$skill" "$skill missing routing load guidance"
 done
+
+require_file "$skills_root/code-reviewer/SKILL.md"
+require_line "target repository's constitution" "$skills_root/code-reviewer/SKILL.md" "code-reviewer missing target-repository authority guidance"
+require_line 'Do not load the shared constitution router or shared development constitution as an automatic source or fallback.' "$skills_root/code-reviewer/SKILL.md" "code-reviewer still permits shared constitution fallback"
 
 for skill in "${linear_only_hard_gated_skills[@]}"; do
   require_file "$skill"
