@@ -159,9 +159,11 @@ After creating the children:
   ```markdown
   ## Child Issues
 
-  - [ ] #123 Add backend validation
-  - [ ] #124 Add frontend empty state
+  - [ ] #123
+  - [ ] #124
   ```
+
+Use only the issue reference in the parent checklist; GitHub renders the linked child title automatically, so repeating the title produces duplicated text in the issue view.
 
 - Resolve every draft dependency reference to its actual GitHub issue ID and update affected child bodies without changing approved scope. Verify the published bodies retain review context, AC IDs, explicit dependencies, and browser declarations/scenarios; do not leave unresolved placeholders.
 - Do not create a new parent issue.
